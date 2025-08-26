@@ -61,9 +61,15 @@ class CameraFragment : Fragment(), FaceDetectorHelper.DetectorListener {
                 .navigate(CameraFragmentDirections.actionCameraToPermissions())
         }
 
-        backgroundExecutor.execute {
-            if (faceDetectorHelper.isClosed()) {
-                faceDetectorHelper.setupFaceDetector()
+        if(this::faceDetectorHelper.isInitialized) {
+            backgroundExecutor.execute {
+                try {
+                    if (faceDetectorHelper.isClosed()) {
+                        faceDetectorHelper.setupFaceDetector()
+                    }
+                } catch (e: Exception) {
+                    // Ignore setup errors in onResume
+                }
             }
         }
     }
@@ -73,7 +79,13 @@ class CameraFragment : Fragment(), FaceDetectorHelper.DetectorListener {
 
         // Close the face detector and release resources
         if(this::faceDetectorHelper.isInitialized) {
-            backgroundExecutor.execute { faceDetectorHelper.clearFaceDetector() }
+            backgroundExecutor.execute { 
+                try {
+                    faceDetectorHelper.clearFaceDetector() 
+                } catch (e: Exception) {
+                    // Ignore cleanup errors
+                }
+            }
         }
     }
 
@@ -112,15 +124,15 @@ class CameraFragment : Fragment(), FaceDetectorHelper.DetectorListener {
             faceDetectorHelper =
                 FaceDetectorHelper(
                     context = requireContext(),
-                    faceDetectorListener = this,
+                    faceDetectorListener = this@CameraFragment,
                     runningMode = RunningMode.LIVE_STREAM
                 )
+        }
 
-            // Wait for the views to be properly laid out
-            fragmentCameraBinding.viewFinder.post {
-                // Set up the camera and its use cases
-                setUpCamera()
-            }
+        // Wait for the views to be properly laid out
+        fragmentCameraBinding.viewFinder.post {
+            // Set up the camera and its use cases
+            setUpCamera()
         }
     }
 
@@ -229,27 +241,29 @@ class CameraFragment : Fragment(), FaceDetectorHelper.DetectorListener {
     // to scale and place bounding boxes properly through OverlayView
     override fun onResults(resultBundle: FaceDetectorHelper.ResultBundle) {
         activity?.runOnUiThread {
-            if (_fragmentCameraBinding != null) {
-                // Pass necessary information to OverlayView for drawing on the canvas
-                val detectionResult = resultBundle.results[0]
-                var bitmap = resultBundle.bitmap
-                val rotation = getRotationCompensation()
-                if(rotation != 0 && bitmap != null){
-                    bitmap = rotateBitmap(bitmap, rotation)
-                }
-                if (isAdded) {
-                   if (bitmap != null)
+            if (_fragmentCameraBinding != null && isAdded) {
+                try {
+                    // Pass necessary information to OverlayView for drawing on the canvas
+                    val detectionResult = resultBundle.results[0]
+                    var bitmap = resultBundle.bitmap
+                    val rotation = getRotationCompensation()
+                    if(rotation != 0 && bitmap != null){
+                        bitmap = rotateBitmap(bitmap, rotation)
+                    }
+                    if (bitmap != null) {
                         fragmentCameraBinding.overlay.setResults(
                             detectionResult,
                             bitmap.height,
                             bitmap.width,
                             bitmap
                         )
+                    }
+
+                    // Force a redraw
+                    fragmentCameraBinding.overlay.invalidate()
+                } catch (e: Exception) {
+                    // Fragment might be destroyed, ignore
                 }
-
-
-                // Force a redraw
-                fragmentCameraBinding.overlay.invalidate()
             }
         }
     }
@@ -260,10 +274,14 @@ class CameraFragment : Fragment(), FaceDetectorHelper.DetectorListener {
         }
     }
     
-    override fun onFrameForContrastDetection(bitmap: Bitmap) {
+    override fun onFrameForContrastDetection(bitmap: Bitmap?) {
         activity?.runOnUiThread {
             if (_fragmentCameraBinding != null && isAdded) {
-                fragmentCameraBinding.overlay.processContrastDetection(bitmap)
+                try {
+                    fragmentCameraBinding.overlay.processContrastDetection(bitmap)
+                } catch (e: Exception) {
+                    // Fragment might be destroyed, ignore
+                }
             }
         }
     }

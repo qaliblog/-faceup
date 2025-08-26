@@ -436,17 +436,27 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
     }
     
     // Process contrast detection for current frame
-    fun processContrastDetection(bitmap: Bitmap) {
+    fun processContrastDetection(bitmap: Bitmap?) {
+        if (bitmap == null || bitmap.isRecycled) return
+        
         contrastJob?.cancel()
         contrastJob = ioScope.launch {
-            performContrastDetection(bitmap)
-            withContext(Dispatchers.Main) {
-                invalidate()
+            try {
+                performContrastDetection(bitmap)
+                withContext(Dispatchers.Main) {
+                    if (!bitmap.isRecycled) {
+                        invalidate()
+                    }
+                }
+            } catch (e: Exception) {
+                // Ignore processing errors
             }
         }
     }
     
     private suspend fun performContrastDetection(currentBitmap: Bitmap) {
+        if (currentBitmap.isRecycled) return
+        
         lock.lock()
         try {
             if (lastFaceRegions.isEmpty()) return

@@ -370,6 +370,6 @@ class FaceDetectorHelper(
     interface DetectorListener {
         fun onError(error: String, errorCode: Int = OTHER_ERROR)
         fun onResults(resultBundle: ResultBundle)
-        fun onFrameForContrastDetection(bitmap: Bitmap)
+        fun onFrameForContrastDetection(bitmap: Bitmap?)
     }
 }
