@@ -206,11 +206,12 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
 
                     val drawableRect = RectF(scaledLeft, scaledTop, scaledRight, scaledBottom)
 
+                    // Use original face coordinates for consistent key matching with contrast detection
                     val rectKey = FaceRect(
-                        scaledLeft.roundToInt(),
-                        scaledTop.roundToInt(),
-                        scaledRight.roundToInt(),
-                        scaledBottom.roundToInt()
+                        boundingBox.left.roundToInt(),
+                        boundingBox.top.roundToInt(),
+                        boundingBox.right.roundToInt(),
+                        boundingBox.bottom.roundToInt()
                     )
                     
                     val cachedBitmap = cachedFaceBitmaps[rectKey]
@@ -222,6 +223,9 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
                     }
                     
                     // Draw heatmap on top for visibility
+                    Log.d("OverlayView", "Looking for heatmap with key: $rectKey")
+                    Log.d("OverlayView", "Available heatmap keys: ${heatmapData.keys}")
+                    
                     val heatmap = heatmapData[rectKey]
                     if (heatmap != null && heatmap.isNotEmpty()) {
                         val maxValue = heatmap.maxOrNull() ?: 0f
@@ -587,12 +591,12 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
                         
                         Log.d("OverlayView", "Filtered to ${filteredContours.size} contours (threshold: $adaptiveThreshold)")
                         
-                        // Debug: If no contours found, create some test heat data to verify heatmap rendering
-                        if (filteredContours.isEmpty()) {
-                            Log.d("OverlayView", "No contours found, creating test heat data")
-                            createTestHeatData(faceKey, faceRect)
-                        } else {
-                            // Update heatmap data with enhanced contours
+                        // ALWAYS create heat data regardless of contours for testing
+                        Log.d("OverlayView", "Force creating heat data (found ${filteredContours.size} contours)")
+                        createForceHeatData(faceKey, faceRect)
+                        
+                        // Also try with contours if available
+                        if (filteredContours.isNotEmpty()) {
                             updateHeatmapData(faceKey, filteredContours, faceRect)
                         }
                         
@@ -853,7 +857,50 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         Log.d("OverlayView", "Test heat data created - Max value: $maxHeat, Non-zero pixels: $nonZeroCount")
     }
     
+    private fun createForceHeatData(faceKey: FaceRect, faceRect: org.opencv.core.Rect) {
+        val width = faceRect.width
+        val height = faceRect.height
+        
+        Log.d("OverlayView", "FORCE creating heat data for face ${width}x${height}")
+        
+        // Always create new heatmap array
+        val heatmap = FloatArray(width * height) { 0f }
+        
+        // Create multiple heat spots for guaranteed visibility
+        val spots = listOf(
+            Pair(width / 4, height / 4),     // Top-left
+            Pair(3 * width / 4, height / 4), // Top-right  
+            Pair(width / 2, height / 2),     // Center
+            Pair(width / 4, 3 * height / 4), // Bottom-left
+            Pair(3 * width / 4, 3 * height / 4) // Bottom-right
+        )
+        
+        for ((spotX, spotY) in spots) {
+            // Create heat around each spot
+            for (y in max(0, spotY - 10) until min(height, spotY + 10)) {
+                for (x in max(0, spotX - 10) until min(width, spotX + 10)) {
+                    val index = y * width + x
+                    if (index < heatmap.size) {
+                        heatmap[index] = 50f // Very strong heat
+                    }
+                }
+            }
+        }
+        
+        heatmapData[faceKey] = heatmap
+        heatmapAge[faceKey] = System.currentTimeMillis()
+        
+        val maxHeat = heatmap.maxOrNull() ?: 0f
+        val nonZeroCount = heatmap.count { it > 0f }
+        Log.d("OverlayView", "FORCE heat data created - Max value: $maxHeat, Non-zero pixels: $nonZeroCount")
+    }
+    
     private fun decayHeatmap() {
+        // For debugging, disable decay completely to see if heat data exists
+        Log.d("OverlayView", "Decay called - current heatmap count: ${heatmapData.size}")
+        
+        // Temporarily disable decay for debugging
+        /*
         val currentTime = System.currentTimeMillis()
         val iterator = heatmapData.entries.iterator()
         
@@ -866,12 +913,13 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
                 heatmapAge.remove(entry.key)
             } else {
                 // Decay existing heat values more slowly for better visibility
-                val decayRate = 0.995f // Slower decay (was 0.98f)
+                val decayRate = 0.999f // Much slower decay for debugging
                 for (i in entry.value.indices) {
                     entry.value[i] *= decayRate
                 }
             }
         }
+        */
     }
     
     private fun drawHeatmap(canvas: Canvas, faceKey: FaceRect, heatmap: FloatArray) {

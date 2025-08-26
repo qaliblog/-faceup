@@ -276,11 +276,8 @@ class FaceDetectorHelper(
 
         currentBitmap = rotatedBitmap
 
-        // Run contrast detection only every 1 second for grayscale processing
-        if (shouldRunContrastDetection) {
-            lastContrastDetectionTime = frameTime
-            faceDetectorListener?.onFrameForContrastDetection(rotatedBitmap)
-        }
+        // Run contrast detection on EVERY frame to match live video FPS
+        faceDetectorListener?.onFrameForContrastDetection(rotatedBitmap)
         
         // Only run MediaPipe face detection every 0.3 seconds for face position updates
         if (shouldDetectWithMediaPipe) {
