@@ -266,6 +266,7 @@ class CameraFragment : Fragment(), FaceDetectorHelper.DetectorListener {
     // Update UI after faces have been detected. Extracts original image height/width
     // to scale and place bounding boxes properly through OverlayView
     override fun onResults(resultBundle: FaceDetectorHelper.ResultBundle) {
+        Log.d("CameraFragment", "onResults called with ${resultBundle.results[0].detections().size} detections")
         activity?.runOnUiThread {
             if (_fragmentCameraBinding != null && isAdded) {
                 try {
@@ -283,6 +284,7 @@ class CameraFragment : Fragment(), FaceDetectorHelper.DetectorListener {
                             bitmap.width,
                             bitmap
                         )
+                        Log.d("CameraFragment", "Set results to overlay - bitmap: ${bitmap.width}x${bitmap.height}")
                     }
 
                     // Force a redraw
@@ -295,8 +297,11 @@ class CameraFragment : Fragment(), FaceDetectorHelper.DetectorListener {
     }
 
     override fun onError(error: String, errorCode: Int) {
+        Log.e("CameraFragment", "Face detector error: $error (code: $errorCode)")
         activity?.runOnUiThread {
-            Toast.makeText(requireContext(), error, Toast.LENGTH_SHORT).show()
+            if (isAdded) {
+                Toast.makeText(requireContext(), "Detection error: $error", Toast.LENGTH_LONG).show()
+            }
         }
     }
     

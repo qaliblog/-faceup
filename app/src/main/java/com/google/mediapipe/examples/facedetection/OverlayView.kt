@@ -308,6 +308,13 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
             canvas.drawText("Heatmaps: ${heatmapData.size}", 50f, 150f, debugPaint)
             canvas.drawText("Face regions: ${lastFaceRegions.size}", 50f, 180f, debugPaint)
             
+            // Debug: Show scaling and image info
+            debugPaint.color = Color.CYAN
+            debugPaint.textSize = 16f
+            canvas.drawText("Scale: ${String.format("%.2f", uniformScaleFactor)}", 50f, 210f, debugPaint)
+            canvas.drawText("Original: ${originalImageWidth}x${originalImageHeight}", 50f, 230f, debugPaint)
+            canvas.drawText("Offset: ${xOffset.toInt()},${yOffset.toInt()}", 50f, 250f, debugPaint)
+            
         } finally {
             lock.unlock()
         }

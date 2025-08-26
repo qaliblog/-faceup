@@ -18,9 +18,9 @@ import com.google.mediapipe.tasks.vision.facedetector.FaceDetector
 import com.google.mediapipe.tasks.vision.facedetector.FaceDetectorResult
 
 class FaceDetectorHelper(
-    var threshold: Float = THRESHOLD_DEFAULT,
-    // Use GPU as the default delegate
-    var currentDelegate: Int = DELEGATE_GPU,
+    var threshold: Float = 0.3f, // Lower threshold for easier detection
+    // Use CPU as default for better reliability  
+    var currentDelegate: Int = DELEGATE_CPU,
     var runningMode: RunningMode = RunningMode.IMAGE,
     val context: Context,
     // The listener is only used when running in RunningMode.LIVE_STREAM
@@ -48,14 +48,25 @@ class FaceDetectorHelper(
     // that are created on the main thread and used on a background thread, but
     // the GPU delegate needs to be used on the thread that initialized the detector
     fun setupFaceDetector() {
+        Log.d(TAG, "Setting up face detector with threshold: $threshold, delegate: $currentDelegate, runningMode: $runningMode")
+        
         // Set general detection options, including number of used threads
         val baseOptionsBuilder = BaseOptions.builder()
 
         // Use the specified hardware for running the model. Default to CPU
-        // Set delegate to GPU
-        baseOptionsBuilder.setDelegate(Delegate.GPU)
+        when (currentDelegate) {
+            DELEGATE_CPU -> {
+                baseOptionsBuilder.setDelegate(Delegate.CPU)
+                Log.d(TAG, "Using CPU delegate")
+            }
+            DELEGATE_GPU -> {
+                baseOptionsBuilder.setDelegate(Delegate.GPU)
+                Log.d(TAG, "Using GPU delegate")
+            }
+        }
 
         val modelName = "face_detection_short_range.tflite"
+        Log.d(TAG, "Loading model: $modelName")
 
         baseOptionsBuilder.setModelAssetPath(modelName)
 
@@ -92,6 +103,7 @@ class FaceDetectorHelper(
 
             val options = optionsBuilder.build()
             faceDetector = FaceDetector.createFromOptions(context, options)
+            Log.d(TAG, "Face detector initialized successfully")
         } catch (e: IllegalStateException) {
             faceDetectorListener?.onError(
                 "Face detector failed to initialize. See error logs for details"
@@ -271,6 +283,7 @@ class FaceDetectorHelper(
         
         // Only run MediaPipe face detection every 0.1 seconds  
         if (shouldDetectWithMediaPipe) {
+            Log.d(TAG, "Running MediaPipe detection on frame: ${rotatedBitmap.width}x${rotatedBitmap.height}")
             lastDetectionTime = frameTime
             detectAsync(mpImage, frameTime)
         }
@@ -281,7 +294,16 @@ class FaceDetectorHelper(
     fun detectAsync(mpImage: MPImage, frameTime: Long) {
         // As we're using running mode LIVE_STREAM, the detection result will be returned in
         // returnLivestreamResult function
-        faceDetector?.detectAsync(mpImage, frameTime)
+        if (faceDetector == null) {
+            Log.e(TAG, "Face detector is null, cannot detect")
+            return
+        }
+        
+        try {
+            faceDetector?.detectAsync(mpImage, frameTime)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error during face detection: ${e.message}")
+        }
     }
 
     // Return the detection result to this FaceDetectorHelper's caller
@@ -291,6 +313,8 @@ class FaceDetectorHelper(
     ) {
         val finishTimeMs = SystemClock.uptimeMillis()
         val inferenceTime = finishTimeMs - result.timestampMs()
+        
+        Log.d(TAG, "Face detection result: ${result.detections().size} faces detected")
 
         faceDetectorListener?.onResults(
             ResultBundle(
