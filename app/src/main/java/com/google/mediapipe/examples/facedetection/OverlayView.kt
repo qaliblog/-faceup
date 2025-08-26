@@ -190,12 +190,25 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
 
     override fun draw(canvas: Canvas) {
         super.draw(canvas)
+        
+        // Always draw some debug info to verify drawing is working
+        val debugPaint = Paint()
+        debugPaint.color = Color.RED
+        debugPaint.textSize = 30f
+        debugPaint.style = Paint.Style.FILL
+        canvas.drawText("OVERLAY ACTIVE", 50f, 50f, debugPaint)
+        
         lock.lock()
         try {
             // Decay heatmap data
             decayHeatmap()
             
             results?.let {
+                // Debug: Show number of detections
+                val detectionCount = it.detections().size
+                debugPaint.color = Color.YELLOW
+                canvas.drawText("Faces: $detectionCount", 50f, 100f, debugPaint)
+                
                 for (detection in it.detections()) {
                     val boundingBox = detection.boundingBox()
 
@@ -238,13 +251,27 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
                     } else {
                         // Draw test pattern to ensure heatmap rendering works
                         drawTestHeatmap(canvas, rectKey)
+                        
+                        // Debug: Show that we're drawing test pattern
+                        debugPaint.color = Color.RED
+                        debugPaint.textSize = 16f
+                        canvas.drawText("Drawing test pattern", scaledLeft, scaledTop + 60, debugPaint)
                     }
                     
                     // Optionally draw enhanced contrast frame (for debugging)
                     // drawEnhancedContrastFrame(canvas, rectKey)
 
-                    // Draw the detection box
+                    // Draw the detection box with enhanced visibility
+                    boxPaint.color = Color.GREEN
+                    boxPaint.strokeWidth = 8F
+                    boxPaint.style = Paint.Style.STROKE
                     canvas.drawRect(drawableRect, boxPaint)
+                    
+                    // Draw debug info about the face region
+                    debugPaint.color = Color.CYAN
+                    debugPaint.textSize = 16f
+                    canvas.drawText("Face: ${boundingBox.width().toInt()}x${boundingBox.height().toInt()}", 
+                        scaledLeft, scaledTop - 10, debugPaint)
 
                     // Draw detected eyes
                     cachedEyeRects[rectKey]?.forEach { eyeRect ->
@@ -269,7 +296,18 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
 
                     canvas.drawText(drawableText, scaledLeft, scaledTop + textHeight, textPaint)
                 }
+            } ?: run {
+                // Debug: Show if no results
+                debugPaint.color = Color.WHITE
+                canvas.drawText("No face detected", 50f, 100f, debugPaint)
             }
+            
+            // Debug: Show contrast detection status
+            debugPaint.color = Color.MAGENTA
+            debugPaint.textSize = 20f
+            canvas.drawText("Heatmaps: ${heatmapData.size}", 50f, 150f, debugPaint)
+            canvas.drawText("Face regions: ${lastFaceRegions.size}", 50f, 180f, debugPaint)
+            
         } finally {
             lock.unlock()
         }
@@ -482,6 +520,8 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
     fun processContrastDetection(bitmap: Bitmap?) {
         if (bitmap == null || bitmap.isRecycled) return
         
+        Log.d("OverlayView", "processContrastDetection called - bitmap: ${bitmap.width}x${bitmap.height}")
+        
         contrastJob?.cancel()
         contrastJob = ioScope.launch {
             try {
@@ -492,7 +532,7 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
                     }
                 }
             } catch (e: Exception) {
-                // Ignore processing errors
+                Log.e("OverlayView", "Error in contrast detection: ${e.message}")
             }
         }
     }
@@ -858,9 +898,9 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         val centerX = (faceKey.left + faceKey.right) / 2f
         val centerY = (faceKey.top + faceKey.bottom) / 2f
         
-        // Draw a simple gradient circle as test
-        for (radius in 10..30 step 5) {
-            val intensity = (30 - radius) / 20f
+        // Draw a more visible gradient pattern
+        for (radius in 20..60 step 10) {
+            val intensity = (60 - radius) / 40f
             paint.color = getHeatmapColor(intensity)
             canvas.drawCircle(
                 (centerX * uniformScaleFactor) + xOffset,
@@ -870,15 +910,28 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
             )
         }
         
-        // Test indicator
+        // Draw some additional test squares
+        for (i in 0..2) {
+            paint.color = getHeatmapColor(0.3f + i * 0.3f)
+            val size = 20f + i * 10f
+            canvas.drawRect(
+                (centerX * uniformScaleFactor) + xOffset - size/2 + i * 30f,
+                (centerY * uniformScaleFactor) + yOffset + 40f,
+                (centerX * uniformScaleFactor) + xOffset + size/2 + i * 30f,
+                (centerY * uniformScaleFactor) + yOffset + 40f + size,
+                paint
+            )
+        }
+        
+        // Test indicator - make it very visible
         val debugPaint = Paint()
         debugPaint.color = Color.YELLOW
-        debugPaint.textSize = 16f
+        debugPaint.textSize = 24f
         debugPaint.style = Paint.Style.FILL
-        debugPaint.setShadowLayer(2f, 1f, 1f, Color.BLACK)
-        canvas.drawText("TEST", 
+        debugPaint.setShadowLayer(3f, 2f, 2f, Color.BLACK)
+        canvas.drawText("TEST HEATMAP", 
             (faceKey.left * uniformScaleFactor) + xOffset + 5, 
-            (faceKey.top * uniformScaleFactor) + yOffset + 45, 
+            (faceKey.top * uniformScaleFactor) + yOffset + 120, 
             debugPaint)
     }
     
