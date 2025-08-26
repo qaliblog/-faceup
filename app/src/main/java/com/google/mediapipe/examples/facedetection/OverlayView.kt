@@ -17,7 +17,6 @@ import org.opencv.core.Point
 import org.opencv.core.Scalar
 import org.opencv.core.Size
 import org.opencv.imgproc.Imgproc
-import org.opencv.imgproc.CLAHE
 import org.opencv.objdetect.CascadeClassifier
 import java.io.File
 import java.io.FileOutputStream
@@ -25,6 +24,7 @@ import java.util.concurrent.Executors
 import kotlin.math.roundToInt
 import kotlin.math.max
 import kotlin.math.min
+import kotlin.math.sqrt
 
 class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs) {
 
@@ -56,7 +56,7 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
     private var dynamicContrastThreshold = 30.0
     
     // Enhanced contrast processing
-    private var clahe: CLAHE? = null
+    private var clahe: Any? = null
     private var contrastEnhancedFrames = HashMap<FaceRect, Mat>()
     private var adaptiveContrastHistory = mutableListOf<Double>()
     private val contrastHistorySize = 10
@@ -110,11 +110,11 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
 
     private fun initializeCLAHE() {
         try {
-            clahe = Imgproc.createCLAHE()
-            clahe?.setClipLimit(3.0) // Higher clip limit for more aggressive enhancement
-            clahe?.setTilesGridSize(Size(8.0, 8.0)) // 8x8 grid for face regions
+            // Use simple histogram equalization as fallback
+            clahe = "histogram_equalization" // Simple marker for enhanced processing
         } catch (e: Exception) {
-            Log.e("OverlayView", "Error initializing CLAHE: ${e.message}")
+            Log.e("OverlayView", "Error initializing contrast enhancement: ${e.message}")
+            clahe = null
         }
     }
 
@@ -577,8 +577,12 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         val enhanced = Mat()
         
         try {
-            // Method 1: CLAHE (Contrast Limited Adaptive Histogram Equalization)
-            clahe?.apply(inputMat, enhanced)
+            // Method 1: Histogram Equalization for enhanced contrast
+            if (clahe != null) {
+                Imgproc.equalizeHist(inputMat, enhanced)
+            } else {
+                inputMat.copyTo(enhanced)
+            }
             
             // Method 2: Additional histogram stretching for maximum contrast
             val stretched = Mat()
@@ -610,11 +614,12 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
     
     private fun calculateAdaptiveDynamicThreshold(diff: Mat, faceKey: FaceRect): Double {
         val mean = Core.mean(diff)
-        val stdDev = Mat()
-        Core.meanStdDev(diff, mean, stdDev)
+        val meanMat = Mat()
+        val stdDevMat = Mat()
+        Core.meanStdDev(diff, meanMat, stdDevMat)
         
         val meanValue = mean.`val`[0]
-        val stdDevValue = stdDev.`val`[0]
+        val stdDevValue = Core.mean(stdDevMat).`val`[0]
         
         // Add to adaptive history for this face region
         adaptiveContrastHistory.add(meanValue)
@@ -649,12 +654,13 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         val historicalComponent = (historicalMean - meanValue) * 0.2
         
         // Final adaptive threshold
-        val adaptiveThreshold = baseThreshold + adaptiveComponent + historicalComponent
+        val adaptiveThreshold = baseThreshold.toDouble() + adaptiveComponent.toDouble() + historicalComponent.toDouble()
         
         // Clamp to reasonable bounds
         dynamicContrastThreshold = adaptiveThreshold.coerceIn(minContrastThreshold, maxContrastThreshold)
         
-        stdDev.release()
+        meanMat.release()
+        stdDevMat.release()
         return dynamicContrastThreshold
     }
     
@@ -712,7 +718,7 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
                             val index = (y * width) + x
                             if (index < heatmap.size) {
                                 // Distance-based intensity falloff
-                                val distance = kotlin.math.sqrt((dx * dx + dy * dy).toDouble()).toFloat()
+                                val distance = sqrt((dx * dx + dy * dy).toDouble()).toFloat()
                                 val intensity = baseIntensity * (1f / (1f + distance * 0.5f))
                                 
                                 heatmap[index] = min(maxHeatmapValue, heatmap[index] + intensity)
