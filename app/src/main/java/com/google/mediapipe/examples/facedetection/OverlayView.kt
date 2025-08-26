@@ -223,9 +223,6 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
                     }
                     
                     // Draw heatmap on top for visibility
-                    Log.d("OverlayView", "Looking for heatmap with key: $rectKey")
-                    Log.d("OverlayView", "Available heatmap keys: ${heatmapData.keys}")
-                    
                     val heatmap = heatmapData[rectKey]
                     if (heatmap != null && heatmap.isNotEmpty()) {
                         val maxValue = heatmap.maxOrNull() ?: 0f
@@ -250,15 +247,13 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
                             canvas.drawText("LOW HEAT", scaledLeft + 5, scaledTop + 50, debugPaint)
                         }
                     } else {
-                        // No heatmap data, draw test pattern and debug info
-                        drawTestHeatmap(canvas, rectKey)
-                        
+                        // No heatmap data - show debug info
                         val debugPaint = Paint()
                         debugPaint.color = Color.RED
                         debugPaint.textSize = 18f
                         debugPaint.style = Paint.Style.FILL
                         debugPaint.setShadowLayer(2f, 1f, 1f, Color.BLACK)
-                        canvas.drawText("NO HEAT DATA", scaledLeft + 5, scaledTop + 70, debugPaint)
+                        canvas.drawText("NO MOTION DETECTED", scaledLeft + 5, scaledTop + 70, debugPaint)
                     }
                     
                     // Optionally draw enhanced contrast frame (for debugging)
@@ -434,10 +429,10 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
                 val drawableRect = RectF(scaledLeft, scaledTop, scaledRight, scaledBottom)
 
                 val rectKey = FaceRect(
-                    scaledLeft.roundToInt(),
-                    scaledTop.roundToInt(),
-                    scaledRight.roundToInt(),
-                    scaledBottom.roundToInt()
+                    boundingBox.left.roundToInt(),
+                    boundingBox.top.roundToInt(),
+                    boundingBox.right.roundToInt(),
+                    boundingBox.bottom.roundToInt()
                 )
 
                 var cachedBitmap = cachedFaceBitmaps[rectKey]
@@ -565,7 +560,7 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
                         val adaptiveThreshold = calculateAdaptiveDynamicThreshold(diff, faceKey)
                         
                         // Use a much lower threshold to detect more motion
-                        val finalThreshold = min(adaptiveThreshold, 8.0) // Force very low threshold for testing
+                        val finalThreshold = min(adaptiveThreshold, 5.0) // Very aggressive threshold for motion detection
                         Log.d("OverlayView", "Using threshold: $finalThreshold (adaptive was: $adaptiveThreshold)")
                         
                         Imgproc.threshold(diff, threshold, finalThreshold, 255.0, Imgproc.THRESH_BINARY)
@@ -603,22 +598,23 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
                             }
                             
                             // Accept contours based on area OR arc length (for open contours)
-                            val minArea = 2.0 // Very small minimum area
-                            val maxArea = faceRect.width * faceRect.height * 0.3 // Allow larger areas
-                            val minArcLength = 10.0 // Minimum arc length for open contours
+                            val minArea = 1.0 // Ultra small minimum area
+                            val maxArea = faceRect.width * faceRect.height * 0.5 // Allow even larger areas
+                            val minArcLength = 5.0 // Lower minimum arc length for open contours
                             
                             (area > minArea && area < maxArea) || (arcLength > minArcLength)
                         }
                         
                         Log.d("OverlayView", "Filtered to ${filteredContours.size} contours (threshold: $adaptiveThreshold)")
                         
-                        // ALWAYS create heat data regardless of contours for testing
-                        Log.d("OverlayView", "Force creating heat data (found ${filteredContours.size} contours)")
-                        createForceHeatData(faceKey, faceRect)
-                        
-                        // Also try with contours if available
+                        // Use real contour data for heat generation
                         if (filteredContours.isNotEmpty()) {
+                            Log.d("OverlayView", "Creating real heat data from ${filteredContours.size} contours")
                             updateHeatmapData(faceKey, filteredContours, faceRect)
+                        } else {
+                            Log.d("OverlayView", "No contours found - trying direct diff heat generation")
+                            // Generate heat directly from difference image if no contours found
+                            createHeatFromDifference(faceKey, faceRect, diff)
                         }
                         
                         // Clean up
@@ -945,6 +941,56 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         Log.d("OverlayView", "FORCE heat data created - Max value: $maxHeat, Non-zero pixels: $nonZeroCount")
     }
     
+    private fun createHeatFromDifference(faceKey: FaceRect, faceRect: org.opencv.core.Rect, diff: Mat) {
+        val width = faceRect.width
+        val height = faceRect.height
+        
+        Log.d("OverlayView", "Creating heat from difference image for face ${width}x${height}")
+        
+        // Initialize heatmap array
+        var heatmap = heatmapData[faceKey]
+        if (heatmap == null) {
+            heatmap = FloatArray(width * height) { 0f }
+            heatmapData[faceKey] = heatmap
+        }
+        
+        // Sample pixels from the difference image to create heat
+        for (y in 0 until height step 2) { // Sample every 2nd pixel for performance
+            for (x in 0 until width step 2) {
+                val pixelValue = diff.get(y, x)[0] // Get difference value
+                if (pixelValue > 2.0) { // Very low threshold for any visible difference
+                    val index = y * width + x
+                    if (index < heatmap.size) {
+                        val intensity = (pixelValue / 255.0 * 20.0).toFloat() // Scale to heat intensity
+                        heatmap[index] = min(maxHeatmapValue, heatmap[index] + intensity)
+                        
+                        // Add heat to neighboring pixels for better visibility
+                        for (dy in -1..1) {
+                            for (dx in -1..1) {
+                                val nx = x + dx
+                                val ny = y + dy
+                                if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+                                    val neighborIndex = ny * width + nx
+                                    if (neighborIndex < heatmap.size) {
+                                        heatmap[neighborIndex] = min(maxHeatmapValue, heatmap[neighborIndex] + intensity * 0.5f)
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        heatmapAge[faceKey] = System.currentTimeMillis()
+        
+        val maxHeat = heatmap.maxOrNull() ?: 0f
+        val nonZeroCount = heatmap.count { it > 0f }
+        if (maxHeat > 0) {
+            Log.d("OverlayView", "Diff heat created - Max value: $maxHeat, Non-zero pixels: $nonZeroCount")
+        }
+    }
+    
     private fun drawLineHeat(heatmap: FloatArray, width: Int, height: Int, p1: Point, p2: Point, intensity: Float) {
         // Draw heat along a line between two points for open contours
         val x1 = p1.x.toInt()
@@ -995,11 +1041,6 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
     }
     
     private fun decayHeatmap() {
-        // For debugging, disable decay completely to see if heat data exists
-        Log.d("OverlayView", "Decay called - current heatmap count: ${heatmapData.size}")
-        
-        // Temporarily disable decay for debugging
-        /*
         val currentTime = System.currentTimeMillis()
         val iterator = heatmapData.entries.iterator()
         
@@ -1011,14 +1052,13 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
                 iterator.remove()
                 heatmapAge.remove(entry.key)
             } else {
-                // Decay existing heat values more slowly for better visibility
-                val decayRate = 0.999f // Much slower decay for debugging
+                // Slow decay for better visibility
+                val decayRate = 0.99f // Slow decay 
                 for (i in entry.value.indices) {
                     entry.value[i] *= decayRate
                 }
             }
         }
-        */
     }
     
     private fun drawHeatmap(canvas: Canvas, faceKey: FaceRect, heatmap: FloatArray) {
