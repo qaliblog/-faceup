@@ -21,5 +21,5 @@ import androidx.lifecycle.ViewModel
  *  This ViewModel is used to store face detector helper settings
  */
 class MainViewModel : ViewModel() {
-    
+    // Empty ViewModel for now - can be extended for settings storage
 }

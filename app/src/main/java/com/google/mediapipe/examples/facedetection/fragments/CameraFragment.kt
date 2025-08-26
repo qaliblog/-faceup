@@ -18,10 +18,10 @@ import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
-import androidx.fragment.app.activityViewModels
+// import androidx.fragment.app.activityViewModels
 import androidx.navigation.Navigation
 import com.google.mediapipe.examples.facedetection.FaceDetectorHelper
-import com.google.mediapipe.examples.facedetection.MainViewModel
+// import com.google.mediapipe.examples.facedetection.MainViewModel
 import com.google.mediapipe.examples.facedetection.R
 import com.google.mediapipe.examples.facedetection.databinding.FragmentCameraBinding
 import com.google.mediapipe.tasks.vision.core.RunningMode
@@ -39,7 +39,7 @@ class CameraFragment : Fragment(), FaceDetectorHelper.DetectorListener {
         get() = _fragmentCameraBinding!!
 
     private lateinit var faceDetectorHelper: FaceDetectorHelper
-    private val viewModel: MainViewModel by activityViewModels()
+    // private val viewModel: MainViewModel by activityViewModels()
     private var preview: Preview? = null
     private var imageAnalyzer: ImageAnalysis? = null
     private var camera: Camera? = null
