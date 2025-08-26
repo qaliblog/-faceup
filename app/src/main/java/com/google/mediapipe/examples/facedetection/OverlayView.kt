@@ -570,23 +570,34 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
                         
                         Imgproc.threshold(diff, threshold, finalThreshold, 255.0, Imgproc.THRESH_BINARY)
                         
-                        // Apply morphological operations to reduce noise
-                        val morphKernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, Size(3.0, 3.0))
+                        // Gentle morphological operations to reduce noise while preserving open contours
+                        val morphKernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, Size(2.0, 2.0)) // Smaller kernel
                         val cleanThreshold = Mat()
-                        Imgproc.morphologyEx(threshold, cleanThreshold, Imgproc.MORPH_OPEN, morphKernel)
-                        Imgproc.morphologyEx(cleanThreshold, cleanThreshold, Imgproc.MORPH_CLOSE, morphKernel)
                         
-                        // Find contours with better parameters
+                        // Only apply opening to remove small noise, skip closing to preserve open contours
+                        Imgproc.morphologyEx(threshold, cleanThreshold, Imgproc.MORPH_OPEN, morphKernel)
+                        
+                        // Find ALL contours including open/partial ones
                         val contours = mutableListOf<MatOfPoint>()
                         val hierarchy = Mat()
-                        Imgproc.findContours(cleanThreshold, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
+                        
+                        // Use RETR_LIST to get all contours (including open ones) instead of RETR_EXTERNAL
+                        // Use CHAIN_APPROX_NONE to preserve all contour points for better detection of partial shapes
+                        Imgproc.findContours(cleanThreshold, contours, hierarchy, Imgproc.RETR_LIST, Imgproc.CHAIN_APPROX_NONE)
                         
                         Log.d("OverlayView", "Found ${contours.size} raw contours for face ${faceRect.width}x${faceRect.height}")
                         
-                        // More permissive contour filtering for better detection
+                        // Very permissive filtering to include open/partial contours
                         val filteredContours = contours.filter { contour ->
                             val area = Imgproc.contourArea(contour)
-                            area > 5.0 && area < (faceRect.width * faceRect.height * 0.2) // Lowered min area, increased max area
+                            val arcLength = Imgproc.arcLength(MatOfPoint2f(*contour.toArray()), false) // false = open curve
+                            
+                            // Accept contours based on area OR arc length (for open contours)
+                            val minArea = 2.0 // Very small minimum area
+                            val maxArea = faceRect.width * faceRect.height * 0.3 // Allow larger areas
+                            val minArcLength = 10.0 // Minimum arc length for open contours
+                            
+                            (area > minArea && area < maxArea) || (arcLength > minArcLength)
                         }
                         
                         Log.d("OverlayView", "Filtered to ${filteredContours.size} contours (threshold: $adaptiveThreshold)")
@@ -765,40 +776,59 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
             Log.d("OverlayView", "Created new heatmap array: ${width}x${height} = ${heatmap.size} pixels")
         }
         
-        // Add heat for each contour with much more aggressive intensity
+        // Add heat for each contour with enhanced intensity for open/partial contours
         for (contour in contours) {
             val points = contour.toArray()
             val contourArea = Imgproc.contourArea(contour)
+            val arcLength = Imgproc.arcLength(MatOfPoint2f(*points), false) // false = open curve
+            val pointCount = points.size
             
-            // Much more aggressive heat intensity for better visibility
+            // Enhanced intensity calculation considering both area and arc length for open contours
             val baseIntensity = when {
-                contourArea < 10 -> 15f     // Even small contours get significant heat
-                contourArea < 30 -> 25f     // Medium contours get strong heat
-                contourArea < 80 -> 35f     // Large contours get very strong heat
-                else -> 50f                 // Very large contours get maximum heat
+                // For very small areas, use arc length to determine intensity (open contours)
+                contourArea < 5 && arcLength > 15 -> 20f   // Open contours with good length
+                contourArea < 5 && arcLength > 25 -> 30f   // Longer open contours
+                contourArea < 10 -> 15f                    // Small closed contours
+                contourArea < 30 -> 25f                    // Medium contours
+                contourArea < 80 -> 35f                    // Large contours
+                else -> 50f                                // Very large contours
             }
             
-            Log.d("OverlayView", "Contour area: $contourArea, base intensity: $baseIntensity, points: ${points.size}")
+            // Bonus intensity for contours with many points (detailed shapes/open contours)
+            val detailBonus = if (pointCount > 20) 5f else 0f
+            val finalIntensity = baseIntensity + detailBonus
             
-            // Apply heat with larger radius for better visibility
-            for (point in points) {
-                val centerX = point.x.toInt()
-                val centerY = point.y.toInt()
-                
-                // Larger radius for more visible heatmap
-                for (dy in -4..4) {
-                    for (dx in -4..4) {
-                        val x = centerX + dx
-                        val y = centerY + dy
-                        
-                        if (x >= 0 && x < width && y >= 0 && y < height) {
-                            val index = (y * width) + x
-                            if (index < heatmap.size) {
-                                // Gentler distance-based falloff for larger heat spread
-                                val distance = sqrt((dx * dx + dy * dy).toDouble()).toFloat()
-                                val intensity = baseIntensity * (1f / (1f + distance * 0.2f)) // Reduced falloff
-                                
-                                heatmap[index] = min(maxHeatmapValue, heatmap[index] + intensity)
+            Log.d("OverlayView", "Contour - area: $contourArea, arc: $arcLength, points: $pointCount, intensity: $finalIntensity")
+            
+            // For open contours (low area, high arc length), use line-based heat distribution
+            if (contourArea < 10 && arcLength > 15) {
+                // Draw heat along the contour path for open contours
+                for (i in 0 until points.size - 1) {
+                    val p1 = points[i]
+                    val p2 = points[i + 1]
+                    drawLineHeat(heatmap, width, height, p1, p2, finalIntensity)
+                }
+            } else {
+                // Traditional area-based heat for closed contours
+                for (point in points) {
+                    val centerX = point.x.toInt()
+                    val centerY = point.y.toInt()
+                    
+                    // Larger radius for more visible heatmap
+                    for (dy in -4..4) {
+                        for (dx in -4..4) {
+                            val x = centerX + dx
+                            val y = centerY + dy
+                            
+                            if (x >= 0 && x < width && y >= 0 && y < height) {
+                                val index = (y * width) + x
+                                if (index < heatmap.size) {
+                                    // Gentler distance-based falloff for larger heat spread
+                                    val distance = sqrt((dx * dx + dy * dy).toDouble()).toFloat()
+                                    val intensity = finalIntensity * (1f / (1f + distance * 0.2f))
+                                    
+                                    heatmap[index] = min(maxHeatmapValue, heatmap[index] + intensity)
+                                }
                             }
                         }
                     }
@@ -893,6 +923,55 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         val maxHeat = heatmap.maxOrNull() ?: 0f
         val nonZeroCount = heatmap.count { it > 0f }
         Log.d("OverlayView", "FORCE heat data created - Max value: $maxHeat, Non-zero pixels: $nonZeroCount")
+    }
+    
+    private fun drawLineHeat(heatmap: FloatArray, width: Int, height: Int, p1: Point, p2: Point, intensity: Float) {
+        // Draw heat along a line between two points for open contours
+        val x1 = p1.x.toInt()
+        val y1 = p1.y.toInt()
+        val x2 = p2.x.toInt()
+        val y2 = p2.y.toInt()
+        
+        // Use Bresenham's line algorithm to draw heat along the line
+        val dx = kotlin.math.abs(x2 - x1)
+        val dy = kotlin.math.abs(y2 - y1)
+        val sx = if (x1 < x2) 1 else -1
+        val sy = if (y1 < y2) 1 else -1
+        var err = dx - dy
+        
+        var x = x1
+        var y = y1
+        
+        while (true) {
+            // Apply heat around the current line point
+            for (dy2 in -2..2) {
+                for (dx2 in -2..2) {
+                    val nx = x + dx2
+                    val ny = y + dy2
+                    
+                    if (nx >= 0 && nx < width && ny >= 0 && ny < height) {
+                        val index = (ny * width) + nx
+                        if (index < heatmap.size) {
+                            val distance = sqrt((dx2 * dx2 + dy2 * dy2).toDouble()).toFloat()
+                            val lineIntensity = intensity * (1f / (1f + distance * 0.3f))
+                            heatmap[index] = min(maxHeatmapValue, heatmap[index] + lineIntensity)
+                        }
+                    }
+                }
+            }
+            
+            if (x == x2 && y == y2) break
+            
+            val e2 = 2 * err
+            if (e2 > -dy) {
+                err -= dy
+                x += sx
+            }
+            if (e2 < dx) {
+                err += dx
+                y += sy
+            }
+        }
     }
     
     private fun decayHeatmap() {
