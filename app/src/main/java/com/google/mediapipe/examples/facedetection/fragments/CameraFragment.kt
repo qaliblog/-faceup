@@ -192,18 +192,16 @@ class CameraFragment : Fragment(), FaceDetectorHelper.DetectorListener {
             CameraSelector.Builder()
                 .requireLensFacing(CameraSelector.LENS_FACING_FRONT).build()
 
-        // Preview. Set lower resolution for better FPS - using 4:3 for better performance
+        // Preview. Set lower resolution for better FPS
         preview =
             Preview.Builder()
-                .setTargetAspectRatio(AspectRatio.RATIO_4_3)
                 .setTargetResolution(Size(640, 480)) // Lower resolution for better FPS
                 .setTargetRotation(fragmentCameraBinding.viewFinder.display.rotation)
                 .build()
 
-        // ImageAnalysis. Lower resolution and 4:3 aspect ratio for better FPS
+        // ImageAnalysis. Lower resolution for better FPS
         imageAnalyzer =
             ImageAnalysis.Builder()
-                .setTargetAspectRatio(AspectRatio.RATIO_4_3)
                 .setTargetResolution(Size(640, 480)) // Match preview resolution
                 .setTargetRotation(fragmentCameraBinding.viewFinder.display.rotation)
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
