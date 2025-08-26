@@ -213,18 +213,31 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
                         scaledBottom.roundToInt()
                     )
                     
-                    // Draw heatmap first (behind everything else)
+                    val cachedBitmap = cachedFaceBitmaps[rectKey]
+                    cachedBitmap?.let {
+                        // Draw grayscale face bitmap with some transparency
+                        val bitmapPaint = Paint()
+                        bitmapPaint.alpha = 200 // Make slightly transparent to see heatmap underneath
+                        canvas.drawBitmap(it, scaledLeft, scaledTop, bitmapPaint)
+                    }
+                    
+                    // Draw heatmap on top for visibility
                     heatmapData[rectKey]?.let { heatmap ->
                         drawHeatmap(canvas, rectKey, heatmap)
+                        
+                        // Debug: Draw a small indicator if heatmap has data
+                        val maxValue = heatmap.maxOrNull() ?: 0f
+                        if (maxValue > 1f) {
+                            val debugPaint = Paint()
+                            debugPaint.color = Color.GREEN
+                            debugPaint.textSize = 20f
+                            canvas.drawText("H:${maxValue.toInt()}", 
+                                scaledLeft + 5, scaledTop + 25, debugPaint)
+                        }
                     }
                     
                     // Optionally draw enhanced contrast frame (for debugging)
                     // drawEnhancedContrastFrame(canvas, rectKey)
-                    
-                    val cachedBitmap = cachedFaceBitmaps[rectKey]
-                    cachedBitmap?.let {
-                        canvas.drawBitmap(it, scaledLeft, scaledTop, null)
-                    }
 
                     // Draw the detection box
                     canvas.drawRect(drawableRect, boxPaint)
@@ -705,12 +718,12 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
             val points = contour.toArray()
             val contourArea = Imgproc.contourArea(contour)
             
-            // Calculate heat intensity based on contour properties
+            // Calculate heat intensity based on contour properties - increased for visibility
             val baseIntensity = when {
-                contourArea < 20 -> 2f      // Small contours - low intensity
-                contourArea < 50 -> 4f      // Medium contours - medium intensity  
-                contourArea < 100 -> 7f     // Large contours - high intensity
-                else -> 10f                 // Very large contours - maximum intensity
+                contourArea < 20 -> 5f      // Small contours - increased from 2f
+                contourArea < 50 -> 8f      // Medium contours - increased from 4f  
+                contourArea < 100 -> 12f    // Large contours - increased from 7f
+                else -> 15f                 // Very large contours - increased from 10f
             }
             
             // Apply heat with distance-based falloff for smoother heatmap
@@ -754,8 +767,8 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
                 iterator.remove()
                 heatmapAge.remove(entry.key)
             } else {
-                // Decay existing heat values
-                val decayRate = 0.98f
+                // Decay existing heat values more slowly for better visibility
+                val decayRate = 0.995f // Slower decay (was 0.98f)
                 for (i in entry.value.indices) {
                     entry.value[i] *= decayRate
                 }
@@ -771,13 +784,15 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         
         val paint = Paint()
         paint.style = Paint.Style.FILL
+        paint.isAntiAlias = true
         
-        for (y in 0 until height step 4) { // Sample every 4 pixels for performance
-            for (x in 0 until width step 4) {
+        // Use smaller step size for better resolution and visibility
+        for (y in 0 until height step 2) { // Changed from 4 to 2 for better resolution
+            for (x in 0 until width step 2) { // Changed from 4 to 2 for better resolution
                 val index = y * width + x
                 if (index < heatmap.size) {
                     val intensity = heatmap[index] / maxHeatmapValue
-                    if (intensity > 0.1f) { // Only draw if there's significant heat
+                    if (intensity > 0.05f) { // Lower threshold for better visibility
                         val color = getHeatmapColor(intensity)
                         paint.color = color
                         
@@ -786,8 +801,8 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
                         canvas.drawRect(
                             (screenX * uniformScaleFactor) + xOffset,
                             (screenY * uniformScaleFactor) + yOffset,
-                            ((screenX + 4) * uniformScaleFactor) + xOffset,
-                            ((screenY + 4) * uniformScaleFactor) + yOffset,
+                            ((screenX + 2) * uniformScaleFactor) + xOffset, // Match step size
+                            ((screenY + 2) * uniformScaleFactor) + yOffset, // Match step size
                             paint
                         )
                     }
@@ -797,25 +812,35 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
     }
     
     private fun getHeatmapColor(intensity: Float): Int {
-        // Create a color gradient from blue (cold) to red (hot) with transparency
-        val alpha = (intensity * 120).toInt().coerceIn(0, 120) // Semi-transparent
+        // Enhanced color gradient with better visibility
+        val alpha = (intensity * 180).toInt().coerceIn(60, 180) // More opaque, minimum 60 alpha
         
         return when {
-            intensity < 0.3f -> {
-                val blue = (255 * (intensity / 0.3f)).toInt()
+            intensity < 0.2f -> {
+                // Blue for low activity
+                val blue = (255 * (intensity / 0.2f)).toInt().coerceIn(100, 255)
                 Color.argb(alpha, 0, 0, blue)
             }
-            intensity < 0.6f -> {
-                val green = (255 * ((intensity - 0.3f) / 0.3f)).toInt()
+            intensity < 0.4f -> {
+                // Cyan for low-medium activity
+                val green = (255 * ((intensity - 0.2f) / 0.2f)).toInt()
                 Color.argb(alpha, 0, green, 255)
             }
+            intensity < 0.6f -> {
+                // Green for medium activity
+                val green = 255
+                val blue = (255 * (1f - ((intensity - 0.4f) / 0.2f))).toInt()
+                Color.argb(alpha, 0, green, blue)
+            }
             intensity < 0.8f -> {
+                // Yellow for medium-high activity
                 val red = (255 * ((intensity - 0.6f) / 0.2f)).toInt()
-                val green = (255 * (1f - ((intensity - 0.6f) / 0.2f))).toInt()
+                val green = 255
                 Color.argb(alpha, red, green, 0)
             }
             else -> {
-                Color.argb(alpha, 255, 0, 0) // Pure red for high intensity
+                // Red for high activity
+                Color.argb(alpha, 255, 0, 0)
             }
         }
     }

@@ -32,7 +32,7 @@ class FaceDetectorHelper(
     private var faceDetector: FaceDetector? = null
     private var currentBitmap: Bitmap? = null
     private var lastDetectionTime = 0L
-    private val detectionInterval = 300L // 0.3 seconds in milliseconds
+    private val detectionInterval = 100L // 0.1 seconds in milliseconds
 
     init {
         setupFaceDetector()
@@ -266,12 +266,13 @@ class FaceDetectorHelper(
         val mpImage = BitmapImageBuilder(rotatedBitmap).build()
         currentBitmap = rotatedBitmap
 
+        // Always run contrast detection on every frame for full FPS
+        faceDetectorListener?.onFrameForContrastDetection(rotatedBitmap)
+        
+        // Only run MediaPipe face detection every 0.1 seconds  
         if (shouldDetectWithMediaPipe) {
             lastDetectionTime = frameTime
             detectAsync(mpImage, frameTime)
-        } else {
-            // Continue with OpenCV contrast detection using the current frame
-            faceDetectorListener?.onFrameForContrastDetection(rotatedBitmap)
         }
     }
 
