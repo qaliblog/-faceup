@@ -9,7 +9,12 @@ import androidx.core.content.ContextCompat
 import com.google.mediapipe.tasks.vision.facedetector.FaceDetectorResult
 import kotlinx.coroutines.*
 import org.opencv.android.Utils
-import org.opencv.core.*
+import org.opencv.core.Core
+import org.opencv.core.Mat
+import org.opencv.core.MatOfPoint
+import org.opencv.core.MatOfRect
+import org.opencv.core.Point
+import org.opencv.core.Scalar
 import org.opencv.core.Size
 import org.opencv.imgproc.Imgproc
 import org.opencv.objdetect.CascadeClassifier
@@ -30,7 +35,7 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
     private var fullBitmap: Bitmap? = null
     private var originalImageHeight: Int = 0
     private var originalImageWidth: Int = 0
-    private var bounds = Rect()
+    private var bounds = android.graphics.Rect()
     private var uniformScaleFactor = 1f
     private var xOffset = 0f
     private var yOffset = 0f
@@ -233,8 +238,8 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
             bitmapMatrix.postRotate(rotationDegrees)
         }
 
-        val scaleX = drawableRect.width() / bitmap.width
-        val scaleY = drawableRect.height() / bitmap.height
+        val scaleX = drawableRect.width() / bitmap.width.toFloat()
+        val scaleY = drawableRect.height() / bitmap.height.toFloat()
         bitmapMatrix.postScale(scaleX, scaleY)
         
         return Bitmap.createBitmap(bitmap, 0, 0, bitmap.width, bitmap.height, bitmapMatrix, true)
@@ -454,7 +459,7 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
             
             if (previousFrame != null) {
                 for (faceRegion in lastFaceRegions) {
-                    val faceRect = Rect(
+                    val faceRect = org.opencv.core.Rect(
                         max(0, faceRegion.left.toInt()),
                         max(0, faceRegion.top.toInt()),
                         min(currentBitmap.width, faceRegion.right.toInt()),
@@ -465,12 +470,12 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
                         val faceKey = FaceRect(faceRect.x, faceRect.y, faceRect.x + faceRect.width, faceRect.y + faceRect.height)
                         
                         // Extract face region from current and previous frames
-                        val currentFace = Mat(grayCurrentMat, faceRect)
-                        val previousFace = Mat(previousFrame!!, faceRect)
+                        val currentFace = Mat(grayCurrentMat, faceRect as org.opencv.core.Rect)
+                        val previousFace = Mat(previousFrame!!, faceRect as org.opencv.core.Rect)
                         
                         // Calculate frame difference
                         val diff = Mat()
-                        Core.absdiff(currentFace, previousFace, diff)
+                        Core.absdiff(currentFace as Mat, previousFace as Mat, diff)
                         
                         // Apply dynamic threshold
                         val threshold = Mat()
@@ -522,7 +527,7 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         return dynamicContrastThreshold
     }
     
-    private fun updateHeatmapData(faceKey: FaceRect, contours: List<MatOfPoint>, faceRect: Rect) {
+    private fun updateHeatmapData(faceKey: FaceRect, contours: List<MatOfPoint>, faceRect: org.opencv.core.Rect) {
         val currentTime = System.currentTimeMillis()
         val width = faceRect.width
         val height = faceRect.height
@@ -541,7 +546,7 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
                 val x = point.x.toInt()
                 val y = point.y.toInt()
                 if (x >= 0 && x < width && y >= 0 && y < height) {
-                    val index = y * width + x
+                    val index = (y * width) + x
                     if (index < heatmap.size) {
                         heatmap[index] = min(maxHeatmapValue, heatmap[index] + 5f)
                     }
