@@ -190,25 +190,12 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
 
     override fun draw(canvas: Canvas) {
         super.draw(canvas)
-        
-        // Always draw some debug info to verify drawing is working
-        val debugPaint = Paint()
-        debugPaint.color = Color.RED
-        debugPaint.textSize = 30f
-        debugPaint.style = Paint.Style.FILL
-        canvas.drawText("OVERLAY ACTIVE", 50f, 50f, debugPaint)
-        
         lock.lock()
         try {
             // Decay heatmap data
             decayHeatmap()
             
             results?.let {
-                // Debug: Show number of detections
-                val detectionCount = it.detections().size
-                debugPaint.color = Color.YELLOW
-                canvas.drawText("Faces: $detectionCount", 50f, 100f, debugPaint)
-                
                 for (detection in it.detections()) {
                     val boundingBox = detection.boundingBox()
 
@@ -251,27 +238,13 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
                     } else {
                         // Draw test pattern to ensure heatmap rendering works
                         drawTestHeatmap(canvas, rectKey)
-                        
-                        // Debug: Show that we're drawing test pattern
-                        debugPaint.color = Color.RED
-                        debugPaint.textSize = 16f
-                        canvas.drawText("Drawing test pattern", scaledLeft, scaledTop + 60, debugPaint)
                     }
                     
                     // Optionally draw enhanced contrast frame (for debugging)
                     // drawEnhancedContrastFrame(canvas, rectKey)
 
-                    // Draw the detection box with enhanced visibility
-                    boxPaint.color = Color.GREEN
-                    boxPaint.strokeWidth = 8F
-                    boxPaint.style = Paint.Style.STROKE
+                    // Draw the detection box
                     canvas.drawRect(drawableRect, boxPaint)
-                    
-                    // Draw debug info about the face region
-                    debugPaint.color = Color.CYAN
-                    debugPaint.textSize = 16f
-                    canvas.drawText("Face: ${boundingBox.width().toInt()}x${boundingBox.height().toInt()}", 
-                        scaledLeft, scaledTop - 10, debugPaint)
 
                     // Draw detected eyes
                     cachedEyeRects[rectKey]?.forEach { eyeRect ->
@@ -296,24 +269,7 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
 
                     canvas.drawText(drawableText, scaledLeft, scaledTop + textHeight, textPaint)
                 }
-            } ?: run {
-                // Debug: Show if no results
-                debugPaint.color = Color.WHITE
-                canvas.drawText("No face detected", 50f, 100f, debugPaint)
             }
-            
-            // Debug: Show contrast detection status
-            debugPaint.color = Color.MAGENTA
-            debugPaint.textSize = 20f
-            canvas.drawText("Heatmaps: ${heatmapData.size}", 50f, 150f, debugPaint)
-            canvas.drawText("Face regions: ${lastFaceRegions.size}", 50f, 180f, debugPaint)
-            
-            // Debug: Show scaling and image info
-            debugPaint.color = Color.CYAN
-            debugPaint.textSize = 16f
-            canvas.drawText("Scale: ${String.format("%.2f", uniformScaleFactor)}", 50f, 210f, debugPaint)
-            canvas.drawText("Original: ${originalImageWidth}x${originalImageHeight}", 50f, 230f, debugPaint)
-            canvas.drawText("Offset: ${xOffset.toInt()},${yOffset.toInt()}", 50f, 250f, debugPaint)
             
         } finally {
             lock.unlock()
@@ -527,8 +483,6 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
     fun processContrastDetection(bitmap: Bitmap?) {
         if (bitmap == null || bitmap.isRecycled) return
         
-        Log.d("OverlayView", "processContrastDetection called - bitmap: ${bitmap.width}x${bitmap.height}")
-        
         contrastJob?.cancel()
         contrastJob = ioScope.launch {
             try {
@@ -539,7 +493,7 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
                     }
                 }
             } catch (e: Exception) {
-                Log.e("OverlayView", "Error in contrast detection: ${e.message}")
+                // Ignore processing errors
             }
         }
     }

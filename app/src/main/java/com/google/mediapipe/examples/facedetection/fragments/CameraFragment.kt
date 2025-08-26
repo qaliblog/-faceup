@@ -127,34 +127,19 @@ class CameraFragment : Fragment(), FaceDetectorHelper.DetectorListener {
 
         // Create the FaceDetectionHelper that will handle the inference
         backgroundExecutor.execute {
-            try {
-                faceDetectorHelper =
-                    FaceDetectorHelper(
-                        context = requireContext(),
-                        faceDetectorListener = this@CameraFragment,
-                        runningMode = RunningMode.LIVE_STREAM
-                    )
-                
-                isFaceDetectorInitialized = true
-                
-                // Only set up camera after faceDetectorHelper is initialized
-                activity?.runOnUiThread {
-                    if (_fragmentCameraBinding != null && isAdded && isFaceDetectorInitialized) {
-                        // Wait for the views to be properly laid out
-                        fragmentCameraBinding.viewFinder.post {
-                            // Set up the camera and its use cases
-                            setUpCamera()
-                        }
-                    }
-                }
-            } catch (e: Exception) {
-                isFaceDetectorInitialized = false
-                activity?.runOnUiThread {
-                    if (isAdded) {
-                        Toast.makeText(requireContext(), "Failed to initialize face detector: ${e.message}", Toast.LENGTH_SHORT).show()
-                    }
-                }
-            }
+            faceDetectorHelper =
+                FaceDetectorHelper(
+                    context = requireContext(),
+                    faceDetectorListener = this@CameraFragment,
+                    runningMode = RunningMode.LIVE_STREAM
+                )
+            isFaceDetectorInitialized = true
+        }
+
+        // Wait for the views to be properly laid out
+        fragmentCameraBinding.viewFinder.post {
+            // Set up the camera and its use cases
+            setUpCamera()
         }
     }
 
@@ -177,10 +162,6 @@ class CameraFragment : Fragment(), FaceDetectorHelper.DetectorListener {
     // Declare and bind preview, capture and analysis use cases
     @SuppressLint("UnsafeOptInUsageError")
     private fun bindCameraUseCases() {
-        // Ensure faceDetectorHelper is initialized before proceeding
-        if (!isFaceDetectorInitialized || !this::faceDetectorHelper.isInitialized) {
-            return
-        }
 
         // CameraProvider
         val cameraProvider =
@@ -195,14 +176,14 @@ class CameraFragment : Fragment(), FaceDetectorHelper.DetectorListener {
         // Preview. Set lower resolution for better FPS
         preview =
             Preview.Builder()
-                .setTargetResolution(Size(640, 480)) // Lower resolution for better FPS
+                .setTargetAspectRatio(AspectRatio.RATIO_4_3)
                 .setTargetRotation(fragmentCameraBinding.viewFinder.display.rotation)
                 .build()
 
-        // ImageAnalysis. Lower resolution for better FPS
+        // ImageAnalysis
         imageAnalyzer =
             ImageAnalysis.Builder()
-                .setTargetResolution(Size(640, 480)) // Match preview resolution
+                .setTargetAspectRatio(AspectRatio.RATIO_4_3)
                 .setTargetRotation(fragmentCameraBinding.viewFinder.display.rotation)
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .setOutputImageFormat(OUTPUT_IMAGE_FORMAT_RGBA_8888)
