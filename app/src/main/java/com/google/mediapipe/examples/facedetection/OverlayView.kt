@@ -614,12 +614,24 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
     
     private fun calculateAdaptiveDynamicThreshold(diff: Mat, faceKey: FaceRect): Double {
         val mean = Core.mean(diff)
-        val meanMat = Mat()
-        val stdDevMat = Mat()
-        Core.meanStdDev(diff, meanMat, stdDevMat)
-        
         val meanValue = mean.`val`[0]
-        val stdDevValue = Core.mean(stdDevMat).`val`[0]
+        
+        // Simplified approach: Calculate variance manually to avoid OpenCV type issues
+        var sumSquaredDiff = 0.0
+        var pixelCount = 0
+        
+        // Sample a subset of pixels for performance (every 4th pixel)
+        for (row in 0 until diff.rows() step 4) {
+            for (col in 0 until diff.cols() step 4) {
+                val pixelValue = diff.get(row, col)[0]
+                val diffFromMean = pixelValue - meanValue
+                sumSquaredDiff += diffFromMean * diffFromMean
+                pixelCount++
+            }
+        }
+        
+        val variance = if (pixelCount > 0) sumSquaredDiff / pixelCount else 0.0
+        val stdDevValue = kotlin.math.sqrt(variance)
         
         // Add to adaptive history for this face region
         adaptiveContrastHistory.add(meanValue)
@@ -653,14 +665,12 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         // Historical component to smooth out fluctuations
         val historicalComponent = (historicalMean - meanValue) * 0.2
         
-        // Final adaptive threshold
-        val adaptiveThreshold = baseThreshold.toDouble() + adaptiveComponent.toDouble() + historicalComponent.toDouble()
+        // Final adaptive threshold (explicit type conversion)
+        val adaptiveThreshold = baseThreshold + adaptiveComponent + historicalComponent
         
         // Clamp to reasonable bounds
         dynamicContrastThreshold = adaptiveThreshold.coerceIn(minContrastThreshold, maxContrastThreshold)
         
-        meanMat.release()
-        stdDevMat.release()
         return dynamicContrastThreshold
     }
     
