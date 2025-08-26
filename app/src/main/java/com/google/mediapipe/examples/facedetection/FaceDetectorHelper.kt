@@ -240,6 +240,7 @@ class FaceDetectorHelper(
             )
         imageProxy.use { bitmapBuffer.copyPixelsFromBuffer(imageProxy.planes[0].buffer) }
         imageProxy.close()
+        
         // Rotate the frame received from the camera to be in the same direction as it'll be shown
         val matrix =
             Matrix().apply {
@@ -268,16 +269,16 @@ class FaceDetectorHelper(
                 true
             )
 
-        // Convert the input Bitmap face to an MPImage face to run inference
-        val mpImage = BitmapImageBuilder(rotatedBitmap).build()
         currentBitmap = rotatedBitmap
 
-        // Always run contrast detection on every frame for full FPS
+        // ALWAYS run contrast detection on EVERY frame for synchronized FPS
         faceDetectorListener?.onFrameForContrastDetection(rotatedBitmap)
         
-        // Only run MediaPipe face detection every 0.3 seconds  
+        // Only run MediaPipe face detection every 0.3 seconds for face position updates
         if (shouldDetectWithMediaPipe) {
             lastDetectionTime = frameTime
+            // Convert the input Bitmap face to an MPImage face to run inference
+            val mpImage = BitmapImageBuilder(rotatedBitmap).build()
             detectAsync(mpImage, frameTime)
         }
     }
