@@ -48,6 +48,8 @@ class CameraFragment : Fragment(), FaceDetectorHelper.DetectorListener {
 
     /** Blocking ML operations are performed using this executor */
     private lateinit var backgroundExecutor: ExecutorService
+    
+    private var isFaceDetectorInitialized = false
 
     override fun onResume() {
         super.onResume()
@@ -61,7 +63,7 @@ class CameraFragment : Fragment(), FaceDetectorHelper.DetectorListener {
                 .navigate(CameraFragmentDirections.actionCameraToPermissions())
         }
 
-        if(this::faceDetectorHelper.isInitialized) {
+        if(isFaceDetectorInitialized && this::faceDetectorHelper.isInitialized && this::backgroundExecutor.isInitialized) {
             backgroundExecutor.execute {
                 try {
                     if (faceDetectorHelper.isClosed()) {
@@ -78,7 +80,7 @@ class CameraFragment : Fragment(), FaceDetectorHelper.DetectorListener {
         super.onPause()
 
         // Close the face detector and release resources
-        if(this::faceDetectorHelper.isInitialized) {
+        if(isFaceDetectorInitialized && this::faceDetectorHelper.isInitialized && this::backgroundExecutor.isInitialized) {
             backgroundExecutor.execute { 
                 try {
                     faceDetectorHelper.clearFaceDetector() 
@@ -91,14 +93,17 @@ class CameraFragment : Fragment(), FaceDetectorHelper.DetectorListener {
 
     override fun onDestroyView() {
         _fragmentCameraBinding = null
+        isFaceDetectorInitialized = false
         super.onDestroyView()
 
         // Shut down our background executor.
-        backgroundExecutor.shutdown()
-        backgroundExecutor.awaitTermination(
-            Long.MAX_VALUE,
-            TimeUnit.NANOSECONDS
-        )
+        if(this::backgroundExecutor.isInitialized) {
+            backgroundExecutor.shutdown()
+            backgroundExecutor.awaitTermination(
+                Long.MAX_VALUE,
+                TimeUnit.NANOSECONDS
+            )
+        }
     }
 
     override fun onCreateView(
@@ -121,18 +126,34 @@ class CameraFragment : Fragment(), FaceDetectorHelper.DetectorListener {
 
         // Create the FaceDetectionHelper that will handle the inference
         backgroundExecutor.execute {
-            faceDetectorHelper =
-                FaceDetectorHelper(
-                    context = requireContext(),
-                    faceDetectorListener = this@CameraFragment,
-                    runningMode = RunningMode.LIVE_STREAM
-                )
-        }
-
-        // Wait for the views to be properly laid out
-        fragmentCameraBinding.viewFinder.post {
-            // Set up the camera and its use cases
-            setUpCamera()
+            try {
+                faceDetectorHelper =
+                    FaceDetectorHelper(
+                        context = requireContext(),
+                        faceDetectorListener = this@CameraFragment,
+                        runningMode = RunningMode.LIVE_STREAM
+                    )
+                
+                isFaceDetectorInitialized = true
+                
+                // Only set up camera after faceDetectorHelper is initialized
+                activity?.runOnUiThread {
+                    if (_fragmentCameraBinding != null && isAdded && isFaceDetectorInitialized) {
+                        // Wait for the views to be properly laid out
+                        fragmentCameraBinding.viewFinder.post {
+                            // Set up the camera and its use cases
+                            setUpCamera()
+                        }
+                    }
+                }
+            } catch (e: Exception) {
+                isFaceDetectorInitialized = false
+                activity?.runOnUiThread {
+                    if (isAdded) {
+                        Toast.makeText(requireContext(), "Failed to initialize face detector: ${e.message}", Toast.LENGTH_SHORT).show()
+                    }
+                }
+            }
         }
     }
 
@@ -155,6 +176,10 @@ class CameraFragment : Fragment(), FaceDetectorHelper.DetectorListener {
     // Declare and bind preview, capture and analysis use cases
     @SuppressLint("UnsafeOptInUsageError")
     private fun bindCameraUseCases() {
+        // Ensure faceDetectorHelper is initialized before proceeding
+        if (!isFaceDetectorInitialized || !this::faceDetectorHelper.isInitialized) {
+            return
+        }
 
         // CameraProvider
         val cameraProvider =
