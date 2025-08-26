@@ -33,6 +33,8 @@ class FaceDetectorHelper(
     private var currentBitmap: Bitmap? = null
     private var lastDetectionTime = 0L
     private val detectionInterval = 300L // 0.3 seconds in milliseconds
+    private var lastContrastDetectionTime = 0L
+    private val contrastDetectionInterval = 1000L // 1 second in milliseconds
 
     init {
         setupFaceDetector()
@@ -230,6 +232,9 @@ class FaceDetectorHelper(
         
         // Check if enough time has passed for MediaPipe detection (0.3 seconds)
         val shouldDetectWithMediaPipe = frameTime - lastDetectionTime >= detectionInterval
+        
+        // Check if enough time has passed for contrast detection (1 second)
+        val shouldRunContrastDetection = frameTime - lastContrastDetectionTime >= contrastDetectionInterval
 
         // Copy out RGB bits from the frame to a bitmap buffer
         val bitmapBuffer =
@@ -271,8 +276,11 @@ class FaceDetectorHelper(
 
         currentBitmap = rotatedBitmap
 
-        // ALWAYS run contrast detection on EVERY frame for synchronized FPS
-        faceDetectorListener?.onFrameForContrastDetection(rotatedBitmap)
+        // Run contrast detection only every 1 second for grayscale processing
+        if (shouldRunContrastDetection) {
+            lastContrastDetectionTime = frameTime
+            faceDetectorListener?.onFrameForContrastDetection(rotatedBitmap)
+        }
         
         // Only run MediaPipe face detection every 0.3 seconds for face position updates
         if (shouldDetectWithMediaPipe) {

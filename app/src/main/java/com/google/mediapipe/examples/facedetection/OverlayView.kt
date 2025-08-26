@@ -559,7 +559,12 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
                         // Apply dynamic adaptive threshold
                         val threshold = Mat()
                         val adaptiveThreshold = calculateAdaptiveDynamicThreshold(diff, faceKey)
-                        Imgproc.threshold(diff, threshold, adaptiveThreshold, 255.0, Imgproc.THRESH_BINARY)
+                        
+                        // Use a much lower threshold to detect more motion
+                        val finalThreshold = min(adaptiveThreshold, 8.0) // Force very low threshold for testing
+                        Log.d("OverlayView", "Using threshold: $finalThreshold (adaptive was: $adaptiveThreshold)")
+                        
+                        Imgproc.threshold(diff, threshold, finalThreshold, 255.0, Imgproc.THRESH_BINARY)
                         
                         // Apply morphological operations to reduce noise
                         val morphKernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, Size(3.0, 3.0))
@@ -582,8 +587,14 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
                         
                         Log.d("OverlayView", "Filtered to ${filteredContours.size} contours (threshold: $adaptiveThreshold)")
                         
-                        // Update heatmap data with enhanced contours
-                        updateHeatmapData(faceKey, filteredContours, faceRect)
+                        // Debug: If no contours found, create some test heat data to verify heatmap rendering
+                        if (filteredContours.isEmpty()) {
+                            Log.d("OverlayView", "No contours found, creating test heat data")
+                            createTestHeatData(faceKey, faceRect)
+                        } else {
+                            // Update heatmap data with enhanced contours
+                            updateHeatmapData(faceKey, filteredContours, faceRect)
+                        }
                         
                         // Clean up
                         currentFace.release()
@@ -799,6 +810,47 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         }
         
         heatmapAge[faceKey] = currentTime
+    }
+    
+    private fun createTestHeatData(faceKey: FaceRect, faceRect: org.opencv.core.Rect) {
+        val width = faceRect.width
+        val height = faceRect.height
+        
+        Log.d("OverlayView", "Creating test heat data for face ${width}x${height}")
+        
+        // Initialize heatmap array if it doesn't exist
+        var heatmap = heatmapData[faceKey]
+        if (heatmap == null) {
+            heatmap = FloatArray(width * height) { 0f }
+            heatmapData[faceKey] = heatmap
+            Log.d("OverlayView", "Created new heatmap array for test: ${width}x${height} = ${heatmap.size} pixels")
+        }
+        
+        // Create some test heat patterns to verify heatmap rendering
+        val centerX = width / 2
+        val centerY = height / 2
+        val radius = min(width, height) / 4
+        
+        // Create a circular heat pattern
+        for (y in 0 until height) {
+            for (x in 0 until width) {
+                val distance = kotlin.math.sqrt(((x - centerX) * (x - centerX) + (y - centerY) * (y - centerY)).toDouble()).toFloat()
+                if (distance <= radius) {
+                    val index = y * width + x
+                    if (index < heatmap.size) {
+                        val intensity = 30f * (1f - distance / radius) // Strong test heat
+                        heatmap[index] = min(maxHeatmapValue, heatmap[index] + intensity)
+                    }
+                }
+            }
+        }
+        
+        val currentTime = System.currentTimeMillis()
+        heatmapAge[faceKey] = currentTime
+        
+        val maxHeat = heatmap.maxOrNull() ?: 0f
+        val nonZeroCount = heatmap.count { it > 0f }
+        Log.d("OverlayView", "Test heat data created - Max value: $maxHeat, Non-zero pixels: $nonZeroCount")
     }
     
     private fun decayHeatmap() {
