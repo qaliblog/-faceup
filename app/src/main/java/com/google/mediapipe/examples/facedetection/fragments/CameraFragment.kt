@@ -259,4 +259,12 @@ class CameraFragment : Fragment(), FaceDetectorHelper.DetectorListener {
             Toast.makeText(requireContext(), error, Toast.LENGTH_SHORT).show()
         }
     }
+    
+    override fun onFrameForContrastDetection(bitmap: Bitmap) {
+        activity?.runOnUiThread {
+            if (_fragmentCameraBinding != null && isAdded) {
+                fragmentCameraBinding.overlay.processContrastDetection(bitmap)
+            }
+        }
+    }
 }

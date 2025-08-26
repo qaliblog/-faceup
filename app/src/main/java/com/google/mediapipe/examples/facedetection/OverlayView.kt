@@ -9,14 +9,16 @@ import androidx.core.content.ContextCompat
 import com.google.mediapipe.tasks.vision.facedetector.FaceDetectorResult
 import kotlinx.coroutines.*
 import org.opencv.android.Utils
-import org.opencv.core.Mat
-import org.opencv.core.MatOfRect
+import org.opencv.core.*
 import org.opencv.core.Size
+import org.opencv.imgproc.Imgproc
 import org.opencv.objdetect.CascadeClassifier
 import java.io.File
 import java.io.FileOutputStream
 import java.util.concurrent.Executors
 import kotlin.math.roundToInt
+import kotlin.math.max
+import kotlin.math.min
 
 class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs) {
 
@@ -37,10 +39,20 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
     private var cachedEyeRects = HashMap<FaceRect, List<RectF>>()
     private var rotationDegrees = 0f
     private lateinit var eyeCascade: CascadeClassifier
+    
+    // Contrast detection and heatmap variables
+    private var previousFrame: Mat? = null
+    private var heatmapData = HashMap<FaceRect, FloatArray>()
+    private var heatmapAge = HashMap<FaceRect, Long>()
+    private var lastFaceRegions = mutableListOf<RectF>()
+    private val heatmapDecayTime = 5000L // 5 seconds
+    private val maxHeatmapValue = 100f
+    private var dynamicContrastThreshold = 30.0
 
     private val backgroundExecutor = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors())
     private val ioScope = CoroutineScope(Dispatchers.IO)
     private var processingJob: Job? = null
+    private var contrastJob: Job? = null
     private val lock = java.util.concurrent.locks.ReentrantLock()
 
     init {
@@ -93,6 +105,11 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
             results = null
             cachedFaceBitmaps.clear()
             cachedEyeRects.clear()
+            heatmapData.clear()
+            heatmapAge.clear()
+            lastFaceRegions.clear()
+            previousFrame?.release()
+            previousFrame = null
             textPaint.reset()
             textBackgroundPaint.reset()
             boxPaint.reset()
@@ -147,6 +164,9 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         super.draw(canvas)
         lock.lock()
         try {
+            // Decay heatmap data
+            decayHeatmap()
+            
             results?.let {
                 for (detection in it.detections()) {
                     val boundingBox = detection.boundingBox()
@@ -164,6 +184,11 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
                         scaledRight.roundToInt(),
                         scaledBottom.roundToInt()
                     )
+                    
+                    // Draw heatmap first (behind everything else)
+                    heatmapData[rectKey]?.let { heatmap ->
+                        drawHeatmap(canvas, rectKey, heatmap)
+                    }
                     
                     val cachedBitmap = cachedFaceBitmaps[rectKey]
                     cachedBitmap?.let {
@@ -294,6 +319,18 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
             originalImageHeight = imageHeight
             originalImageWidth = imageWidth
             rotationDegrees = getRotationDegrees()
+            
+            // Store face regions for contrast detection
+            lastFaceRegions.clear()
+            for (detection in detectionResults.detections()) {
+                val boundingBox = detection.boundingBox()
+                lastFaceRegions.add(RectF(
+                    boundingBox.left,
+                    boundingBox.top,
+                    boundingBox.right,
+                    boundingBox.bottom
+                ))
+            }
         } finally {
             lock.unlock()
         }
@@ -390,6 +427,206 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
             cachedEyeRects = newEyeRects
         } finally {
             lock.unlock()
+        }
+    }
+    
+    // Process contrast detection for current frame
+    fun processContrastDetection(bitmap: Bitmap) {
+        contrastJob?.cancel()
+        contrastJob = ioScope.launch {
+            performContrastDetection(bitmap)
+            withContext(Dispatchers.Main) {
+                invalidate()
+            }
+        }
+    }
+    
+    private suspend fun performContrastDetection(currentBitmap: Bitmap) {
+        lock.lock()
+        try {
+            if (lastFaceRegions.isEmpty()) return
+            
+            val currentMat = Mat()
+            Utils.bitmapToMat(currentBitmap, currentMat)
+            
+            val grayCurrentMat = Mat()
+            Imgproc.cvtColor(currentMat, grayCurrentMat, Imgproc.COLOR_RGB2GRAY)
+            
+            if (previousFrame != null) {
+                for (faceRegion in lastFaceRegions) {
+                    val faceRect = Rect(
+                        max(0, faceRegion.left.toInt()),
+                        max(0, faceRegion.top.toInt()),
+                        min(currentBitmap.width, faceRegion.right.toInt()),
+                        min(currentBitmap.height, faceRegion.bottom.toInt())
+                    )
+                    
+                    if (faceRect.width > 0 && faceRect.height > 0) {
+                        val faceKey = FaceRect(faceRect.x, faceRect.y, faceRect.x + faceRect.width, faceRect.y + faceRect.height)
+                        
+                        // Extract face region from current and previous frames
+                        val currentFace = Mat(grayCurrentMat, faceRect)
+                        val previousFace = Mat(previousFrame!!, faceRect)
+                        
+                        // Calculate frame difference
+                        val diff = Mat()
+                        Core.absdiff(currentFace, previousFace, diff)
+                        
+                        // Apply dynamic threshold
+                        val threshold = Mat()
+                        val adaptiveThreshold = calculateDynamicThreshold(diff)
+                        Imgproc.threshold(diff, threshold, adaptiveThreshold, 255.0, Imgproc.THRESH_BINARY)
+                        
+                        // Find contours
+                        val contours = mutableListOf<MatOfPoint>()
+                        val hierarchy = Mat()
+                        Imgproc.findContours(threshold, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
+                        
+                        // Update heatmap data
+                        updateHeatmapData(faceKey, contours, faceRect)
+                        
+                        // Clean up
+                        currentFace.release()
+                        previousFace.release()
+                        diff.release()
+                        threshold.release()
+                        hierarchy.release()
+                        contours.forEach { it.release() }
+                    }
+                }
+            }
+            
+            // Store current frame as previous for next iteration
+            previousFrame?.release()
+            previousFrame = grayCurrentMat.clone()
+            
+            currentMat.release()
+            grayCurrentMat.release()
+            
+        } finally {
+            lock.unlock()
+        }
+    }
+    
+    private fun calculateDynamicThreshold(diff: Mat): Double {
+        val mean = Core.mean(diff)
+        val meanValue = mean.`val`[0]
+        
+        // Adjust threshold based on overall image activity
+        dynamicContrastThreshold = when {
+            meanValue < 10 -> 15.0  // Low activity - lower threshold
+            meanValue < 30 -> 25.0  // Medium activity - medium threshold
+            else -> 40.0            // High activity - higher threshold
+        }
+        
+        return dynamicContrastThreshold
+    }
+    
+    private fun updateHeatmapData(faceKey: FaceRect, contours: List<MatOfPoint>, faceRect: Rect) {
+        val currentTime = System.currentTimeMillis()
+        val width = faceRect.width
+        val height = faceRect.height
+        
+        // Initialize heatmap array if it doesn't exist
+        var heatmap = heatmapData[faceKey]
+        if (heatmap == null) {
+            heatmap = FloatArray(width * height) { 0f }
+            heatmapData[faceKey] = heatmap
+        }
+        
+        // Add heat for each contour
+        for (contour in contours) {
+            val points = contour.toArray()
+            for (point in points) {
+                val x = point.x.toInt()
+                val y = point.y.toInt()
+                if (x >= 0 && x < width && y >= 0 && y < height) {
+                    val index = y * width + x
+                    if (index < heatmap.size) {
+                        heatmap[index] = min(maxHeatmapValue, heatmap[index] + 5f)
+                    }
+                }
+            }
+        }
+        
+        heatmapAge[faceKey] = currentTime
+    }
+    
+    private fun decayHeatmap() {
+        val currentTime = System.currentTimeMillis()
+        val iterator = heatmapData.entries.iterator()
+        
+        while (iterator.hasNext()) {
+            val entry = iterator.next()
+            val age = heatmapAge[entry.key] ?: currentTime
+            
+            if (currentTime - age > heatmapDecayTime) {
+                iterator.remove()
+                heatmapAge.remove(entry.key)
+            } else {
+                // Decay existing heat values
+                val decayRate = 0.98f
+                for (i in entry.value.indices) {
+                    entry.value[i] *= decayRate
+                }
+            }
+        }
+    }
+    
+    private fun drawHeatmap(canvas: Canvas, faceKey: FaceRect, heatmap: FloatArray) {
+        val width = faceKey.right - faceKey.left
+        val height = faceKey.bottom - faceKey.top
+        
+        if (width <= 0 || height <= 0) return
+        
+        val paint = Paint()
+        paint.style = Paint.Style.FILL
+        
+        for (y in 0 until height step 4) { // Sample every 4 pixels for performance
+            for (x in 0 until width step 4) {
+                val index = y * width + x
+                if (index < heatmap.size) {
+                    val intensity = heatmap[index] / maxHeatmapValue
+                    if (intensity > 0.1f) { // Only draw if there's significant heat
+                        val color = getHeatmapColor(intensity)
+                        paint.color = color
+                        
+                        val screenX = faceKey.left + x
+                        val screenY = faceKey.top + y
+                        canvas.drawRect(
+                            (screenX * uniformScaleFactor) + xOffset,
+                            (screenY * uniformScaleFactor) + yOffset,
+                            ((screenX + 4) * uniformScaleFactor) + xOffset,
+                            ((screenY + 4) * uniformScaleFactor) + yOffset,
+                            paint
+                        )
+                    }
+                }
+            }
+        }
+    }
+    
+    private fun getHeatmapColor(intensity: Float): Int {
+        // Create a color gradient from blue (cold) to red (hot) with transparency
+        val alpha = (intensity * 120).toInt().coerceIn(0, 120) // Semi-transparent
+        
+        return when {
+            intensity < 0.3f -> {
+                val blue = (255 * (intensity / 0.3f)).toInt()
+                Color.argb(alpha, 0, 0, blue)
+            }
+            intensity < 0.6f -> {
+                val green = (255 * ((intensity - 0.3f) / 0.3f)).toInt()
+                Color.argb(alpha, 0, green, 255)
+            }
+            intensity < 0.8f -> {
+                val red = (255 * ((intensity - 0.6f) / 0.2f)).toInt()
+                val green = (255 * (1f - ((intensity - 0.6f) / 0.2f))).toInt()
+                Color.argb(alpha, red, green, 0)
+            }
+            else -> {
+                Color.argb(alpha, 255, 0, 0) // Pure red for high intensity
+            }
         }
     }
 }
