@@ -17,6 +17,7 @@ import org.opencv.core.Point
 import org.opencv.core.Scalar
 import org.opencv.core.Size
 import org.opencv.imgproc.Imgproc
+import org.opencv.imgproc.CLAHE
 import org.opencv.objdetect.CascadeClassifier
 import java.io.File
 import java.io.FileOutputStream
@@ -53,6 +54,14 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
     private val heatmapDecayTime = 5000L // 5 seconds
     private val maxHeatmapValue = 100f
     private var dynamicContrastThreshold = 30.0
+    
+    // Enhanced contrast processing
+    private var clahe: CLAHE? = null
+    private var contrastEnhancedFrames = HashMap<FaceRect, Mat>()
+    private var adaptiveContrastHistory = mutableListOf<Double>()
+    private val contrastHistorySize = 10
+    private val minContrastThreshold = 5.0
+    private val maxContrastThreshold = 80.0
 
     private val backgroundExecutor = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors())
     private val ioScope = CoroutineScope(Dispatchers.IO)
@@ -64,6 +73,7 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         initPaints()
         System.loadLibrary("opencv_java4")
         initializeEyeCascade()
+        initializeCLAHE()
     }
 
     private fun initializeEyeCascade() {
@@ -98,6 +108,16 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         }
     }
 
+    private fun initializeCLAHE() {
+        try {
+            clahe = Imgproc.createCLAHE()
+            clahe?.setClipLimit(3.0) // Higher clip limit for more aggressive enhancement
+            clahe?.setTilesGridSize(Size(8.0, 8.0)) // 8x8 grid for face regions
+        } catch (e: Exception) {
+            Log.e("OverlayView", "Error initializing CLAHE: ${e.message}")
+        }
+    }
+
     private data class FaceRect(val left: Int, val top: Int, val right: Int, val bottom: Int) {
         override fun toString(): String {
             return "{$left,$top,$right,$bottom}"
@@ -115,6 +135,9 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
             lastFaceRegions.clear()
             previousFrame?.release()
             previousFrame = null
+            contrastEnhancedFrames.values.forEach { it.release() }
+            contrastEnhancedFrames.clear()
+            adaptiveContrastHistory.clear()
             textPaint.reset()
             textBackgroundPaint.reset()
             boxPaint.reset()
@@ -194,6 +217,9 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
                     heatmapData[rectKey]?.let { heatmap ->
                         drawHeatmap(canvas, rectKey, heatmap)
                     }
+                    
+                    // Optionally draw enhanced contrast frame (for debugging)
+                    // drawEnhancedContrastFrame(canvas, rectKey)
                     
                     val cachedBitmap = cachedFaceBitmaps[rectKey]
                     cachedBitmap?.let {
@@ -483,35 +509,59 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
                         val currentFace = Mat(grayCurrentMat, faceRect as org.opencv.core.Rect)
                         val previousFace = Mat(previousFrame!!, faceRect as org.opencv.core.Rect)
                         
-                        // Calculate frame difference
-                        val diff = Mat()
-                        Core.absdiff(currentFace as Mat, previousFace as Mat, diff)
+                        // Apply maximum contrast enhancement to both frames
+                        val enhancedCurrentFace = enhanceContrastMax(currentFace)
+                        val enhancedPreviousFace = enhanceContrastMax(previousFace)
                         
-                        // Apply dynamic threshold
+                        // Store enhanced frame for visualization (optional)
+                        contrastEnhancedFrames[faceKey]?.release()
+                        contrastEnhancedFrames[faceKey] = enhancedCurrentFace.clone()
+                        
+                        // Calculate frame difference on enhanced frames
+                        val diff = Mat()
+                        Core.absdiff(enhancedCurrentFace, enhancedPreviousFace, diff)
+                        
+                        // Apply dynamic adaptive threshold
                         val threshold = Mat()
-                        val adaptiveThreshold = calculateDynamicThreshold(diff)
+                        val adaptiveThreshold = calculateAdaptiveDynamicThreshold(diff, faceKey)
                         Imgproc.threshold(diff, threshold, adaptiveThreshold, 255.0, Imgproc.THRESH_BINARY)
                         
-                        // Find contours
+                        // Apply morphological operations to reduce noise
+                        val morphKernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, Size(3.0, 3.0))
+                        val cleanThreshold = Mat()
+                        Imgproc.morphologyEx(threshold, cleanThreshold, Imgproc.MORPH_OPEN, morphKernel)
+                        Imgproc.morphologyEx(cleanThreshold, cleanThreshold, Imgproc.MORPH_CLOSE, morphKernel)
+                        
+                        // Find contours with better parameters
                         val contours = mutableListOf<MatOfPoint>()
                         val hierarchy = Mat()
-                        Imgproc.findContours(threshold, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
+                        Imgproc.findContours(cleanThreshold, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
                         
-                        // Update heatmap data
-                        updateHeatmapData(faceKey, contours, faceRect)
+                        // Filter contours by area to remove noise
+                        val filteredContours = contours.filter { contour ->
+                            val area = Imgproc.contourArea(contour)
+                            area > 10.0 && area < (faceRect.width * faceRect.height * 0.1) // Between 10 pixels and 10% of face area
+                        }
+                        
+                        // Update heatmap data with enhanced contours
+                        updateHeatmapData(faceKey, filteredContours, faceRect)
                         
                         // Clean up
                         currentFace.release()
                         previousFace.release()
+                        enhancedCurrentFace.release()
+                        enhancedPreviousFace.release()
                         diff.release()
                         threshold.release()
+                        cleanThreshold.release()
+                        morphKernel.release()
                         hierarchy.release()
                         contours.forEach { it.release() }
                     }
                 }
             }
             
-            // Store current frame as previous for next iteration
+            // Store current enhanced frame as previous for next iteration
             previousFrame?.release()
             previousFrame = grayCurrentMat.clone()
             
@@ -521,6 +571,91 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         } finally {
             lock.unlock()
         }
+    }
+    
+    private fun enhanceContrastMax(inputMat: Mat): Mat {
+        val enhanced = Mat()
+        
+        try {
+            // Method 1: CLAHE (Contrast Limited Adaptive Histogram Equalization)
+            clahe?.apply(inputMat, enhanced)
+            
+            // Method 2: Additional histogram stretching for maximum contrast
+            val stretched = Mat()
+            Core.normalize(enhanced, stretched, 0.0, 255.0, Core.NORM_MINMAX)
+            
+            // Method 3: Apply gamma correction for enhanced details
+            val gamma = Mat()
+            stretched.convertTo(gamma, -1, 1.2, 0.0) // Gamma = 1.2 for slight enhancement
+            
+            // Method 4: Apply unsharp masking for edge enhancement
+            val blurred = Mat()
+            val unsharpMask = Mat()
+            Imgproc.GaussianBlur(gamma, blurred, Size(3.0, 3.0), 1.0)
+            Core.addWeighted(gamma, 1.5, blurred, -0.5, 0.0, unsharpMask)
+            
+            // Clean up intermediate matrices
+            stretched.release()
+            gamma.release()
+            blurred.release()
+            
+            return unsharpMask
+            
+        } catch (e: Exception) {
+            Log.e("OverlayView", "Error enhancing contrast: ${e.message}")
+            enhanced.release()
+            return inputMat.clone()
+        }
+    }
+    
+    private fun calculateAdaptiveDynamicThreshold(diff: Mat, faceKey: FaceRect): Double {
+        val mean = Core.mean(diff)
+        val stdDev = Mat()
+        Core.meanStdDev(diff, mean, stdDev)
+        
+        val meanValue = mean.`val`[0]
+        val stdDevValue = stdDev.`val`[0]
+        
+        // Add to adaptive history for this face region
+        adaptiveContrastHistory.add(meanValue)
+        if (adaptiveContrastHistory.size > contrastHistorySize) {
+            adaptiveContrastHistory.removeAt(0)
+        }
+        
+        // Calculate adaptive threshold based on:
+        // 1. Current frame activity (mean + std dev)
+        // 2. Historical activity (moving average)
+        // 3. Enhanced contrast sensitivity
+        
+        val historicalMean = if (adaptiveContrastHistory.isNotEmpty()) {
+            adaptiveContrastHistory.average()
+        } else {
+            meanValue
+        }
+        
+        // Dynamic threshold calculation with enhanced sensitivity
+        val baseThreshold = when {
+            meanValue < 5 -> minContrastThreshold * 0.8  // Very low activity - very sensitive
+            meanValue < 15 -> minContrastThreshold       // Low activity - sensitive
+            meanValue < 30 -> minContrastThreshold * 1.5 // Medium activity - moderate
+            meanValue < 50 -> minContrastThreshold * 2.0 // High activity - less sensitive
+            else -> maxContrastThreshold * 0.6           // Very high activity - reduce noise
+        }
+        
+        // Adaptive component based on standard deviation (edge strength)
+        val adaptiveComponent = stdDevValue * 0.3
+        
+        // Historical component to smooth out fluctuations
+        val historicalComponent = (historicalMean - meanValue) * 0.2
+        
+        // Final adaptive threshold
+        val adaptiveThreshold = baseThreshold + adaptiveComponent + historicalComponent
+        
+        // Clamp to reasonable bounds
+        dynamicContrastThreshold = adaptiveThreshold.coerceIn(minContrastThreshold, maxContrastThreshold)
+        
+        stdDev.release()
+        return dynamicContrastThreshold
     }
     
     private fun calculateDynamicThreshold(diff: Mat): Double {
@@ -549,16 +684,40 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
             heatmapData[faceKey] = heatmap
         }
         
-        // Add heat for each contour
+        // Add heat for each contour with enhanced intensity calculation
         for (contour in contours) {
             val points = contour.toArray()
+            val contourArea = Imgproc.contourArea(contour)
+            
+            // Calculate heat intensity based on contour properties
+            val baseIntensity = when {
+                contourArea < 20 -> 2f      // Small contours - low intensity
+                contourArea < 50 -> 4f      // Medium contours - medium intensity  
+                contourArea < 100 -> 7f     // Large contours - high intensity
+                else -> 10f                 // Very large contours - maximum intensity
+            }
+            
+            // Apply heat with distance-based falloff for smoother heatmap
             for (point in points) {
-                val x = point.x.toInt()
-                val y = point.y.toInt()
-                if (x >= 0 && x < width && y >= 0 && y < height) {
-                    val index = (y * width) + x
-                    if (index < heatmap.size) {
-                        heatmap[index] = min(maxHeatmapValue, heatmap[index] + 5f)
+                val centerX = point.x.toInt()
+                val centerY = point.y.toInt()
+                
+                // Apply heat in a small radius around each contour point
+                for (dy in -2..2) {
+                    for (dx in -2..2) {
+                        val x = centerX + dx
+                        val y = centerY + dy
+                        
+                        if (x >= 0 && x < width && y >= 0 && y < height) {
+                            val index = (y * width) + x
+                            if (index < heatmap.size) {
+                                // Distance-based intensity falloff
+                                val distance = kotlin.math.sqrt((dx * dx + dy * dy).toDouble()).toFloat()
+                                val intensity = baseIntensity * (1f / (1f + distance * 0.5f))
+                                
+                                heatmap[index] = min(maxHeatmapValue, heatmap[index] + intensity)
+                            }
+                        }
                     }
                 }
             }
@@ -641,6 +800,34 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
             }
             else -> {
                 Color.argb(alpha, 255, 0, 0) // Pure red for high intensity
+            }
+        }
+    }
+    
+    // Optional method to visualize enhanced contrast frames (for debugging)
+    private fun drawEnhancedContrastFrame(canvas: Canvas, faceKey: FaceRect) {
+        contrastEnhancedFrames[faceKey]?.let { enhancedMat ->
+            try {
+                val enhancedBitmap = Bitmap.createBitmap(
+                    enhancedMat.cols(), 
+                    enhancedMat.rows(), 
+                    Bitmap.Config.ARGB_8888
+                )
+                Utils.matToBitmap(enhancedMat, enhancedBitmap)
+                
+                val paint = Paint()
+                paint.alpha = 128 // Semi-transparent overlay
+                
+                canvas.drawBitmap(
+                    enhancedBitmap,
+                    (faceKey.left * uniformScaleFactor) + xOffset,
+                    (faceKey.top * uniformScaleFactor) + yOffset,
+                    paint
+                )
+                
+                enhancedBitmap.recycle()
+            } catch (e: Exception) {
+                // Ignore visualization errors
             }
         }
     }
