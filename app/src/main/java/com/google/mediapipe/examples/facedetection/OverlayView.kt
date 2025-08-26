@@ -590,7 +590,17 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
                         // Very permissive filtering to include open/partial contours
                         val filteredContours = contours.filter { contour ->
                             val area = Imgproc.contourArea(contour)
-                            val arcLength = Imgproc.arcLength(MatOfPoint2f(*contour.toArray()), false) // false = open curve
+                            val points = contour.toArray()
+                            
+                            // Calculate arc length manually to avoid MatOfPoint2f compatibility issues
+                            var arcLength = 0.0
+                            for (i in 0 until points.size - 1) {
+                                val p1 = points[i]
+                                val p2 = points[i + 1]
+                                val dx = p2.x - p1.x
+                                val dy = p2.y - p1.y
+                                arcLength += kotlin.math.sqrt(dx * dx + dy * dy)
+                            }
                             
                             // Accept contours based on area OR arc length (for open contours)
                             val minArea = 2.0 // Very small minimum area
@@ -780,7 +790,17 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         for (contour in contours) {
             val points = contour.toArray()
             val contourArea = Imgproc.contourArea(contour)
-            val arcLength = Imgproc.arcLength(MatOfPoint2f(*points), false) // false = open curve
+            
+            // Calculate arc length manually to avoid MatOfPoint2f compatibility issues
+            var arcLength = 0.0
+            for (i in 0 until points.size - 1) {
+                val p1 = points[i]
+                val p2 = points[i + 1]
+                val dx = p2.x - p1.x
+                val dy = p2.y - p1.y
+                arcLength += kotlin.math.sqrt(dx * dx + dy * dy)
+            }
+            
             val pointCount = points.size
             
             // Enhanced intensity calculation considering both area and arc length for open contours
