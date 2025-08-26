@@ -32,9 +32,19 @@ class FaceDetectorHelper(
     private var faceDetector: FaceDetector? = null
     private var currentBitmap: Bitmap? = null
     private var lastDetectionTime = 0L
-    private val detectionInterval = 300L // 0.3 seconds in milliseconds
-    private var lastContrastDetectionTime = 0L
-    private val contrastDetectionInterval = 1000L // 1 second in milliseconds
+    private var baseDetectionInterval = 500L // Base interval: 0.5 seconds
+    private var adaptiveDetectionInterval = 500L // Current adaptive interval
+    
+    // Position tracking for adaptive intervals
+    private var lastFacePosition: RectF? = null
+    private var positionChangeThreshold = 20f // Pixels threshold for position change detection
+    
+    // Position averaging (prevents sudden jumps)
+    private var averageFaceX: Float? = null
+    private var averageFaceY: Float? = null
+    private var averageFaceW: Float? = null
+    private var averageFaceH: Float? = null
+    private val averageAlpha = 0.3f // 30% new, 70% old average
 
     init {
         setupFaceDetector()
@@ -230,11 +240,11 @@ class FaceDetectorHelper(
 
         val frameTime = SystemClock.uptimeMillis()
         
-        // Check if enough time has passed for MediaPipe detection (0.3 seconds)
-        val shouldDetectWithMediaPipe = frameTime - lastDetectionTime >= detectionInterval
+        // Calculate adaptive MediaPipe detection interval
+        adaptiveDetectionInterval = calculateAdaptiveInterval()
         
-        // Check if enough time has passed for contrast detection (1 second)
-        val shouldRunContrastDetection = frameTime - lastContrastDetectionTime >= contrastDetectionInterval
+        // Check if enough time has passed for MediaPipe detection (adaptive)
+        val shouldDetectWithMediaPipe = frameTime - lastDetectionTime >= adaptiveDetectionInterval
 
         // Copy out RGB bits from the frame to a bitmap buffer
         val bitmapBuffer =
@@ -313,7 +323,13 @@ class FaceDetectorHelper(
         val finishTimeMs = SystemClock.uptimeMillis()
         val inferenceTime = finishTimeMs - result.timestampMs()
         
-        // Log.d(TAG, "Face detection result: ${result.detections().size} faces detected")
+        // Update face position averages for adaptive intervals
+        if (result.detections().isNotEmpty()) {
+            val detection = result.detections()[0] // Use first (largest) detection
+            val boundingBox = detection.boundingBox()
+            val faceRect = RectF(boundingBox.left, boundingBox.top, boundingBox.right, boundingBox.bottom)
+            updateFaceAverages(faceRect)
+        }
 
         faceDetectorListener?.onResults(
             ResultBundle(
@@ -368,6 +384,59 @@ class FaceDetectorHelper(
         // If faceDetector?.detect() returns null, this is likely an error. Returning null
         // to indicate this.
         return null
+    }
+
+    private fun calculateAdaptiveInterval(): Long {
+        lastFacePosition?.let { lastPos ->
+            // Calculate distance from average position if available
+            val avgX = averageFaceX ?: lastPos.left
+            val avgY = averageFaceY ?: lastPos.top
+            val avgW = averageFaceW ?: (lastPos.right - lastPos.left)
+            val avgH = averageFaceH ?: (lastPos.bottom - lastPos.top)
+            
+            val avgCenterX = avgX + avgW / 2
+            val avgCenterY = avgY + avgH / 2
+            val lastCenterX = lastPos.left + (lastPos.right - lastPos.left) / 2
+            val lastCenterY = lastPos.top + (lastPos.bottom - lastPos.top) / 2
+            
+            val distanceFromAverage = kotlin.math.sqrt(
+                ((lastCenterX - avgCenterX) * (lastCenterX - avgCenterX) + 
+                 (lastCenterY - avgCenterY) * (lastCenterY - avgCenterY)).toDouble()
+            ).toFloat()
+            
+            // Adaptive interval based on distance from average position
+            return when {
+                distanceFromAverage > positionChangeThreshold * 1.5f -> 100L // High movement - 10 FPS
+                distanceFromAverage > positionChangeThreshold -> 200L // Medium movement - 5 FPS  
+                distanceFromAverage > positionChangeThreshold * 0.5f -> 400L // Low movement - 2.5 FPS
+                else -> 1000L // Stable position - 1 FPS
+            }
+        }
+        return baseDetectionInterval // Default if no previous position
+    }
+    
+    private fun updateFaceAverages(faceRect: RectF) {
+        val faceX = faceRect.left
+        val faceY = faceRect.top
+        val faceW = faceRect.right - faceRect.left
+        val faceH = faceRect.bottom - faceRect.top
+        
+        // Update averages using exponential moving average
+        if (averageFaceX != null) {
+            averageFaceX = averageAlpha * faceX + (1 - averageAlpha) * averageFaceX!!
+            averageFaceY = averageAlpha * faceY + (1 - averageAlpha) * averageFaceY!!
+            averageFaceW = averageAlpha * faceW + (1 - averageAlpha) * averageFaceW!!
+            averageFaceH = averageAlpha * faceH + (1 - averageAlpha) * averageFaceH!!
+        } else {
+            // Initialize averages
+            averageFaceX = faceX
+            averageFaceY = faceY
+            averageFaceW = faceW
+            averageFaceH = faceH
+        }
+        
+        // Update last position for change detection
+        lastFacePosition = faceRect
     }
 
     // Wraps results from inference, the time it takes for inference to be performed, and

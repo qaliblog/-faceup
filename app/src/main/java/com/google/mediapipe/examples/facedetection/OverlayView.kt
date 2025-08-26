@@ -63,6 +63,24 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
     private val minContrastThreshold = 5.0
     private val maxContrastThreshold = 80.0
 
+    // Object tracking for consistent detection (Python version replication)
+    private val objectHistory = ArrayDeque<List<FaceRect>>(150) // 150 frames history
+    private val minConsistencyFrames = 10 // 10 frames for faster consistency
+    private var currentObjects = mutableListOf<FaceRect>()
+    private var lastConsistentFace: FaceRect? = null
+    private var consistencyResetCounter = 0
+    private val maxResetFrames = 40 // 40 frames for faster reset
+    
+    // Average face size tracking (dynamic exponential moving average)
+    private var averageFaceSize: Float? = null
+    private val faceAvgAlpha = 0.1f // 10% new, 90% old average
+    
+    // Movement tracking for coordinated detection
+    private var previousMediaPipeCenterX: Float? = null
+    private var previousMediaPipeCenterY: Float? = null
+    private var previousFaceCenterX: Float? = null
+    private var previousFaceCenterY: Float? = null
+
     private val backgroundExecutor = Executors.newFixedThreadPool(Runtime.getRuntime().availableProcessors())
     private val ioScope = CoroutineScope(Dispatchers.IO)
     private var processingJob: Job? = null
@@ -521,6 +539,9 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         try {
             if (lastFaceRegions.isEmpty()) return
             
+            // Clear current objects for this frame
+            currentObjects.clear()
+            
             val currentMat = Mat()
             Utils.bitmapToMat(currentBitmap, currentMat)
             
@@ -639,8 +660,63 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
             currentMat.release()
             grayCurrentMat.release()
             
+            // Update object tracking system (Python version logic)
+            updateObjectTracking()
+            
         } finally {
             lock.unlock()
+        }
+    }
+    
+    private fun updateObjectTracking() {
+        // Check if consistency should be reset
+        if (shouldResetConsistency()) {
+            objectHistory.clear()
+            lastConsistentFace = null
+            Log.d("OverlayView", "Consistency reset - no face detected for too long")
+        }
+        
+        // Add current objects to history (convert face regions to FaceRect)
+        val frameObjects = mutableListOf<FaceRect>()
+        for (faceRegion in lastFaceRegions) {
+            frameObjects.add(FaceRect(
+                faceRegion.left.toInt(),
+                faceRegion.top.toInt(), 
+                faceRegion.right.toInt(),
+                faceRegion.bottom.toInt()
+            ))
+        }
+        
+        // Add to history (maintain max size)
+        objectHistory.addLast(frameObjects)
+        if (objectHistory.size > 150) {
+            objectHistory.removeFirst()
+        }
+        
+        // Find the most consistent object
+        val consistentFace = findMostConsistentObject()
+        
+        // Update consistent face position if found
+        if (consistentFace != null) {
+            lastConsistentFace = updateConsistentFacePosition(consistentFace, consistentFace)
+        } else if (lastConsistentFace != null && frameObjects.isNotEmpty()) {
+            // Try to reconnect to nearest object
+            var nearestObject: FaceRect? = null
+            var nearestDistance = Float.MAX_VALUE
+            
+            for (obj in frameObjects) {
+                val distance = calculateDistance(lastConsistentFace!!, obj)
+                if (distance < nearestDistance) {
+                    nearestDistance = distance
+                    nearestObject = obj
+                }
+            }
+            
+            // Reconnect if close enough (150px threshold like Python version)
+            if (nearestObject != null && nearestDistance < 150f) {
+                lastConsistentFace = nearestObject
+                Log.d("OverlayView", "Reconnecting lost face to nearest object at distance ${nearestDistance.toInt()}px")
+            }
         }
     }
     
@@ -1059,6 +1135,101 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
                 }
             }
         }
+    }
+    
+    // Object tracking functions (replicated from Python version)
+    private fun findMostConsistentObject(): FaceRect? {
+        if (objectHistory.size < minConsistencyFrames) {
+            return null
+        }
+        
+        // Count appearances for each object with position tolerance
+        val objectCounts = mutableMapOf<String, Pair<Int, FaceRect>>()
+        
+        for (frameObjects in objectHistory) {
+            for (obj in frameObjects) {
+                // Create a position-based key (rounded to reduce exact position dependency)
+                val posKey = "${(obj.left / 10).toInt() * 10},${(obj.top / 10).toInt() * 10},${(obj.width() / 10).toInt() * 10},${(obj.height() / 10).toInt() * 10}"
+                val currentCount = objectCounts[posKey]?.first ?: 0
+                objectCounts[posKey] = Pair(currentCount + 1, obj)
+            }
+        }
+        
+        // Find object with highest count
+        val mostConsistent = objectCounts.maxByOrNull { it.value.first }
+        return if (mostConsistent != null && mostConsistent.value.first >= minConsistencyFrames) {
+            mostConsistent.value.second
+        } else null
+    }
+    
+    private fun shouldResetConsistency(): Boolean {
+        if (currentObjects.isEmpty()) {
+            consistencyResetCounter++
+        } else {
+            consistencyResetCounter = 0
+        }
+        return consistencyResetCounter >= maxResetFrames
+    }
+    
+    private fun calculateDistance(rect1: FaceRect, rect2: FaceRect): Float {
+        val center1X = rect1.left + rect1.width() / 2
+        val center1Y = rect1.top + rect1.height() / 2
+        val center2X = rect2.left + rect2.width() / 2
+        val center2Y = rect2.top + rect2.height() / 2
+        
+        return kotlin.math.sqrt(
+            ((center1X - center2X) * (center1X - center2X) + 
+             (center1Y - center2Y) * (center1Y - center2Y)).toDouble()
+        ).toFloat()
+    }
+    
+    private fun updateConsistentFacePosition(consistentFace: FaceRect?, mostConsistentObject: FaceRect?): FaceRect? {
+        if (consistentFace == null || currentObjects.isEmpty() || mostConsistentObject == null) {
+            return consistentFace
+        }
+        
+        // Find the best match in current objects (closest to most consistent)
+        var bestMatch: FaceRect? = null
+        var bestDistance = Float.MAX_VALUE
+        
+        for (obj in currentObjects) {
+            val distance = calculateDistance(mostConsistentObject, obj)
+            if (distance < bestDistance) {
+                bestDistance = distance
+                bestMatch = obj
+            }
+        }
+        
+        if (bestMatch == null) return consistentFace
+        
+        // Calculate movement speed based on distance (Python version logic)
+        val currentCenterX = consistentFace.left + consistentFace.width() / 2
+        val currentCenterY = consistentFace.top + consistentFace.height() / 2
+        val targetCenterX = bestMatch.left + bestMatch.width() / 2
+        val targetCenterY = bestMatch.top + bestMatch.height() / 2
+        
+        val distance = kotlin.math.sqrt(
+            ((currentCenterX - targetCenterX) * (currentCenterX - targetCenterX) + 
+             (currentCenterY - targetCenterY) * (currentCenterY - targetCenterY)).toDouble()
+        ).toFloat()
+        
+        // Distance-based position update speed (matching Python logic)
+        val posAlpha = when {
+            distance < 10f -> 0.02f // Very close - 98% new position (very fast)
+            distance < 25f -> 0.1f  // Close - 90% new position (fast)
+            distance < 50f -> 0.25f // Medium - 75% new position (medium)
+            distance < 80f -> 0.5f  // Far - 50% new position (slow)
+            distance < 120f -> 0.8f // Very far - 20% new position (very slow)
+            else -> 0.95f           // Extremely far - 5% new position (minimal)
+        }
+        
+        // Apply position and size updates
+        val updatedLeft = posAlpha * consistentFace.left + (1 - posAlpha) * bestMatch.left
+        val updatedTop = posAlpha * consistentFace.top + (1 - posAlpha) * bestMatch.top
+        val updatedRight = posAlpha * consistentFace.right + (1 - posAlpha) * bestMatch.right
+        val updatedBottom = posAlpha * consistentFace.bottom + (1 - posAlpha) * bestMatch.bottom
+        
+        return FaceRect(updatedLeft.toInt(), updatedTop.toInt(), updatedRight.toInt(), updatedBottom.toInt())
     }
     
     private fun drawHeatmap(canvas: Canvas, faceKey: FaceRect, heatmap: FloatArray) {
