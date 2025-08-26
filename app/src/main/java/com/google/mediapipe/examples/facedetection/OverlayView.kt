@@ -51,7 +51,7 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
     private var heatmapData = HashMap<FaceRect, FloatArray>()
     private var heatmapAge = HashMap<FaceRect, Long>()
     private var lastFaceRegions = mutableListOf<RectF>()
-    private val heatmapDecayTime = 5000L // 5 seconds
+    private val heatmapDecayTime = 8000L // 8 seconds - longer persistence for better visibility
     private val maxHeatmapValue = 100f
     private var dynamicContrastThreshold = 30.0
     
@@ -215,25 +215,29 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
                     
                     val cachedBitmap = cachedFaceBitmaps[rectKey]
                     cachedBitmap?.let {
-                        // Draw grayscale face bitmap with some transparency
+                        // Draw grayscale face bitmap with more transparency for heatmap visibility
                         val bitmapPaint = Paint()
-                        bitmapPaint.alpha = 200 // Make slightly transparent to see heatmap underneath
+                        bitmapPaint.alpha = 150 // More transparent to see heatmap better
                         canvas.drawBitmap(it, scaledLeft, scaledTop, bitmapPaint)
                     }
                     
                     // Draw heatmap on top for visibility
-                    heatmapData[rectKey]?.let { heatmap ->
+                    val heatmap = heatmapData[rectKey]
+                    if (heatmap != null) {
                         drawHeatmap(canvas, rectKey, heatmap)
                         
                         // Debug: Draw a small indicator if heatmap has data
                         val maxValue = heatmap.maxOrNull() ?: 0f
-                        if (maxValue > 1f) {
-                            val debugPaint = Paint()
-                            debugPaint.color = Color.GREEN
-                            debugPaint.textSize = 20f
-                            canvas.drawText("H:${maxValue.toInt()}", 
-                                scaledLeft + 5, scaledTop + 25, debugPaint)
-                        }
+                        val debugPaint = Paint()
+                        debugPaint.color = Color.GREEN
+                        debugPaint.textSize = 20f
+                        debugPaint.style = Paint.Style.FILL
+                        debugPaint.setShadowLayer(2f, 1f, 1f, Color.BLACK)
+                        canvas.drawText("H:${maxValue.toInt()}", 
+                            scaledLeft + 5, scaledTop + 25, debugPaint)
+                    } else {
+                        // Draw test pattern to ensure heatmap rendering works
+                        drawTestHeatmap(canvas, rectKey)
                     }
                     
                     // Optionally draw enhanced contrast frame (for debugging)
@@ -663,13 +667,13 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
             meanValue
         }
         
-        // Dynamic threshold calculation with enhanced sensitivity
+        // Dynamic threshold calculation with maximum sensitivity for better heatmap
         val baseThreshold = when {
-            meanValue < 5 -> minContrastThreshold * 0.8  // Very low activity - very sensitive
-            meanValue < 15 -> minContrastThreshold       // Low activity - sensitive
-            meanValue < 30 -> minContrastThreshold * 1.5 // Medium activity - moderate
-            meanValue < 50 -> minContrastThreshold * 2.0 // High activity - less sensitive
-            else -> maxContrastThreshold * 0.6           // Very high activity - reduce noise
+            meanValue < 5 -> minContrastThreshold * 0.5  // Very low activity - maximum sensitivity
+            meanValue < 15 -> minContrastThreshold * 0.7 // Low activity - high sensitivity
+            meanValue < 30 -> minContrastThreshold       // Medium activity - normal sensitivity
+            meanValue < 50 -> minContrastThreshold * 1.2 // High activity - slightly less sensitive
+            else -> maxContrastThreshold * 0.5           // Very high activity - reduce noise
         }
         
         // Adaptive component based on standard deviation (edge strength)
@@ -792,7 +796,7 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
                 val index = y * width + x
                 if (index < heatmap.size) {
                     val intensity = heatmap[index] / maxHeatmapValue
-                    if (intensity > 0.05f) { // Lower threshold for better visibility
+                    if (intensity > 0.02f) { // Even lower threshold for maximum visibility
                         val color = getHeatmapColor(intensity)
                         paint.color = color
                         
@@ -812,8 +816,8 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
     }
     
     private fun getHeatmapColor(intensity: Float): Int {
-        // Enhanced color gradient with better visibility
-        val alpha = (intensity * 180).toInt().coerceIn(60, 180) // More opaque, minimum 60 alpha
+        // Enhanced color gradient with maximum visibility
+        val alpha = (intensity * 200).toInt().coerceIn(80, 200) // Even more opaque, minimum 80 alpha
         
         return when {
             intensity < 0.2f -> {
@@ -843,6 +847,39 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
                 Color.argb(alpha, 255, 0, 0)
             }
         }
+    }
+    
+    private fun drawTestHeatmap(canvas: Canvas, faceKey: FaceRect) {
+        // Draw a simple test pattern to verify heatmap rendering works
+        val paint = Paint()
+        paint.style = Paint.Style.FILL
+        paint.isAntiAlias = true
+        
+        val centerX = (faceKey.left + faceKey.right) / 2f
+        val centerY = (faceKey.top + faceKey.bottom) / 2f
+        
+        // Draw a simple gradient circle as test
+        for (radius in 10..30 step 5) {
+            val intensity = (30 - radius) / 20f
+            paint.color = getHeatmapColor(intensity)
+            canvas.drawCircle(
+                (centerX * uniformScaleFactor) + xOffset,
+                (centerY * uniformScaleFactor) + yOffset,
+                radius * uniformScaleFactor,
+                paint
+            )
+        }
+        
+        // Test indicator
+        val debugPaint = Paint()
+        debugPaint.color = Color.YELLOW
+        debugPaint.textSize = 16f
+        debugPaint.style = Paint.Style.FILL
+        debugPaint.setShadowLayer(2f, 1f, 1f, Color.BLACK)
+        canvas.drawText("TEST", 
+            (faceKey.left * uniformScaleFactor) + xOffset + 5, 
+            (faceKey.top * uniformScaleFactor) + yOffset + 45, 
+            debugPaint)
     }
     
     // Optional method to visualize enhanced contrast frames (for debugging)

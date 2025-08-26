@@ -5,6 +5,7 @@ import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.os.Bundle
 import android.util.Log
+import android.util.Size
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -191,17 +192,19 @@ class CameraFragment : Fragment(), FaceDetectorHelper.DetectorListener {
             CameraSelector.Builder()
                 .requireLensFacing(CameraSelector.LENS_FACING_FRONT).build()
 
-        // Preview. Set the aspect ratio to 16:9
+        // Preview. Set lower resolution for better FPS - using 4:3 for better performance
         preview =
             Preview.Builder()
-                .setTargetAspectRatio(AspectRatio.RATIO_16_9)
+                .setTargetAspectRatio(AspectRatio.RATIO_4_3)
+                .setTargetResolution(Size(640, 480)) // Lower resolution for better FPS
                 .setTargetRotation(fragmentCameraBinding.viewFinder.display.rotation)
                 .build()
 
-        // ImageAnalysis. Using RGBA 8888 to match how our models work, set aspect ratio to 16:9
+        // ImageAnalysis. Lower resolution and 4:3 aspect ratio for better FPS
         imageAnalyzer =
             ImageAnalysis.Builder()
-                .setTargetAspectRatio(AspectRatio.RATIO_16_9)
+                .setTargetAspectRatio(AspectRatio.RATIO_4_3)
+                .setTargetResolution(Size(640, 480)) // Match preview resolution
                 .setTargetRotation(fragmentCameraBinding.viewFinder.display.rotation)
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .setOutputImageFormat(OUTPUT_IMAGE_FORMAT_RGBA_8888)
