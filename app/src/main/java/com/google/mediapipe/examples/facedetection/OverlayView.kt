@@ -1149,7 +1149,7 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         for (frameObjects in objectHistory) {
             for (obj in frameObjects) {
                 // Create a position-based key (rounded to reduce exact position dependency)
-                val posKey = "${(obj.left / 10).toInt() * 10},${(obj.top / 10).toInt() * 10},${(obj.width() / 10).toInt() * 10},${(obj.height() / 10).toInt() * 10}"
+                val posKey = "${(obj.left / 10).toInt() * 10},${(obj.top / 10).toInt() * 10},${((obj.right - obj.left) / 10).toInt() * 10},${((obj.bottom - obj.top) / 10).toInt() * 10}"
                 val currentCount = objectCounts[posKey]?.first ?: 0
                 objectCounts[posKey] = Pair(currentCount + 1, obj)
             }
@@ -1172,10 +1172,10 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
     }
     
     private fun calculateDistance(rect1: FaceRect, rect2: FaceRect): Float {
-        val center1X = rect1.left + rect1.width() / 2
-        val center1Y = rect1.top + rect1.height() / 2
-        val center2X = rect2.left + rect2.width() / 2
-        val center2Y = rect2.top + rect2.height() / 2
+        val center1X = rect1.left + (rect1.right - rect1.left) / 2
+        val center1Y = rect1.top + (rect1.bottom - rect1.top) / 2
+        val center2X = rect2.left + (rect2.right - rect2.left) / 2
+        val center2Y = rect2.top + (rect2.bottom - rect2.top) / 2
         
         return kotlin.math.sqrt(
             ((center1X - center2X) * (center1X - center2X) + 
@@ -1203,10 +1203,10 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         if (bestMatch == null) return consistentFace
         
         // Calculate movement speed based on distance (Python version logic)
-        val currentCenterX = consistentFace.left + consistentFace.width() / 2
-        val currentCenterY = consistentFace.top + consistentFace.height() / 2
-        val targetCenterX = bestMatch.left + bestMatch.width() / 2
-        val targetCenterY = bestMatch.top + bestMatch.height() / 2
+        val currentCenterX = consistentFace.left + (consistentFace.right - consistentFace.left) / 2
+        val currentCenterY = consistentFace.top + (consistentFace.bottom - consistentFace.top) / 2
+        val targetCenterX = bestMatch.left + (bestMatch.right - bestMatch.left) / 2
+        val targetCenterY = bestMatch.top + (bestMatch.bottom - bestMatch.top) / 2
         
         val distance = kotlin.math.sqrt(
             ((currentCenterX - targetCenterX) * (currentCenterX - targetCenterX) + 
@@ -1224,10 +1224,10 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         }
         
         // Apply position and size updates
-        val updatedLeft = posAlpha * consistentFace.left + (1 - posAlpha) * bestMatch.left
-        val updatedTop = posAlpha * consistentFace.top + (1 - posAlpha) * bestMatch.top
-        val updatedRight = posAlpha * consistentFace.right + (1 - posAlpha) * bestMatch.right
-        val updatedBottom = posAlpha * consistentFace.bottom + (1 - posAlpha) * bestMatch.bottom
+        val updatedLeft = posAlpha * consistentFace.left + (1f - posAlpha) * bestMatch.left
+        val updatedTop = posAlpha * consistentFace.top + (1f - posAlpha) * bestMatch.top
+        val updatedRight = posAlpha * consistentFace.right + (1f - posAlpha) * bestMatch.right
+        val updatedBottom = posAlpha * consistentFace.bottom + (1f - posAlpha) * bestMatch.bottom
         
         return FaceRect(updatedLeft.toInt(), updatedTop.toInt(), updatedRight.toInt(), updatedBottom.toInt())
     }

@@ -3,6 +3,7 @@ package com.google.mediapipe.examples.facedetection
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Matrix
+import android.graphics.RectF
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.SystemClock
@@ -387,32 +388,31 @@ class FaceDetectorHelper(
     }
 
     private fun calculateAdaptiveInterval(): Long {
-        lastFacePosition?.let { lastPos ->
-            // Calculate distance from average position if available
-            val avgX = averageFaceX ?: lastPos.left
-            val avgY = averageFaceY ?: lastPos.top
-            val avgW = averageFaceW ?: (lastPos.right - lastPos.left)
-            val avgH = averageFaceH ?: (lastPos.bottom - lastPos.top)
-            
-            val avgCenterX = avgX + avgW / 2
-            val avgCenterY = avgY + avgH / 2
-            val lastCenterX = lastPos.left + (lastPos.right - lastPos.left) / 2
-            val lastCenterY = lastPos.top + (lastPos.bottom - lastPos.top) / 2
-            
-            val distanceFromAverage = kotlin.math.sqrt(
-                ((lastCenterX - avgCenterX) * (lastCenterX - avgCenterX) + 
-                 (lastCenterY - avgCenterY) * (lastCenterY - avgCenterY)).toDouble()
-            ).toFloat()
-            
-            // Adaptive interval based on distance from average position
-            return when {
-                distanceFromAverage > positionChangeThreshold * 1.5f -> 100L // High movement - 10 FPS
-                distanceFromAverage > positionChangeThreshold -> 200L // Medium movement - 5 FPS  
-                distanceFromAverage > positionChangeThreshold * 0.5f -> 400L // Low movement - 2.5 FPS
-                else -> 1000L // Stable position - 1 FPS
-            }
+        val lastPos = lastFacePosition ?: return baseDetectionInterval
+        
+        // Calculate distance from average position if available
+        val avgX = averageFaceX ?: lastPos.left
+        val avgY = averageFaceY ?: lastPos.top
+        val avgW = averageFaceW ?: (lastPos.right - lastPos.left)
+        val avgH = averageFaceH ?: (lastPos.bottom - lastPos.top)
+        
+        val avgCenterX = avgX + avgW / 2f
+        val avgCenterY = avgY + avgH / 2f
+        val lastCenterX = lastPos.left + (lastPos.right - lastPos.left) / 2f
+        val lastCenterY = lastPos.top + (lastPos.bottom - lastPos.top) / 2f
+        
+        val distanceFromAverage = kotlin.math.sqrt(
+            ((lastCenterX - avgCenterX) * (lastCenterX - avgCenterX) + 
+             (lastCenterY - avgCenterY) * (lastCenterY - avgCenterY)).toDouble()
+        ).toFloat()
+        
+        // Adaptive interval based on distance from average position
+        return when {
+            distanceFromAverage > positionChangeThreshold * 1.5f -> 100L // High movement - 10 FPS
+            distanceFromAverage > positionChangeThreshold -> 200L // Medium movement - 5 FPS  
+            distanceFromAverage > positionChangeThreshold * 0.5f -> 400L // Low movement - 2.5 FPS
+            else -> 1000L // Stable position - 1 FPS
         }
-        return baseDetectionInterval // Default if no previous position
     }
     
     private fun updateFaceAverages(faceRect: RectF) {
@@ -423,10 +423,10 @@ class FaceDetectorHelper(
         
         // Update averages using exponential moving average
         if (averageFaceX != null) {
-            averageFaceX = averageAlpha * faceX + (1 - averageAlpha) * averageFaceX!!
-            averageFaceY = averageAlpha * faceY + (1 - averageAlpha) * averageFaceY!!
-            averageFaceW = averageAlpha * faceW + (1 - averageAlpha) * averageFaceW!!
-            averageFaceH = averageAlpha * faceH + (1 - averageAlpha) * averageFaceH!!
+            averageFaceX = averageAlpha * faceX + (1f - averageAlpha) * averageFaceX!!
+            averageFaceY = averageAlpha * faceY + (1f - averageAlpha) * averageFaceY!!
+            averageFaceW = averageAlpha * faceW + (1f - averageAlpha) * averageFaceW!!
+            averageFaceH = averageAlpha * faceH + (1f - averageAlpha) * averageFaceH!!
         } else {
             // Initialize averages
             averageFaceX = faceX
