@@ -1259,8 +1259,8 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         Imgproc.cvtColor(searchRegion, hsvRegion, Imgproc.COLOR_RGB2HSV)
         
         // Python: Optimized skin tone range for face detection (made more permissive)
-        val lowerSkin = Scalar(0.0, 20.0, 40.0)  // Lower saturation and value thresholds
-        val upperSkin = Scalar(25.0, 255.0, 255.0)  // Wider hue range
+        val lowerSkin = Scalar(0.0, 20.0, 40.0, 0.0)  // Lower saturation and value thresholds (4 params)
+        val upperSkin = Scalar(25.0, 255.0, 255.0, 255.0)  // Wider hue range (4 params)
         
         // Create a mask for skin tone
         val mask = Mat()
@@ -1562,8 +1562,8 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
     
     private fun calculateDynamicThreshold(enhancedMat: Mat): Double {
         // Calculate image statistics for dynamic thresholding
-        val mean = Scalar()
-        val stddev = Scalar()
+        val mean = Scalar(0.0)
+        val stddev = Scalar(0.0)
         Core.meanStdDev(enhancedMat, mean, stddev)
         
         val meanValue = mean.`val`[0]
@@ -1767,20 +1767,7 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         
         return dynamicContrastThreshold
     }
-    
-    private fun calculateDynamicThreshold(diff: Mat): Double {
-        val mean = Core.mean(diff)
-        val meanValue = mean.`val`[0]
-        
-        // Adjust threshold based on overall image activity
-        dynamicContrastThreshold = when {
-            meanValue < 10 -> 15.0  // Low activity - lower threshold
-            meanValue < 30 -> 25.0  // Medium activity - medium threshold
-            else -> 40.0            // High activity - higher threshold
-        }
-        
-        return dynamicContrastThreshold
-    }
+
     
     private fun updateHeatmapData(faceKey: FaceRect, contours: List<MatOfPoint>, faceRect: org.opencv.core.Rect) {
         val currentTime = System.currentTimeMillis()
