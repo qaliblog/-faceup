@@ -407,84 +407,7 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
             )
         }
         
-        // Draw detected objects (gray rectangles like Python)
-        for (obj in currentObjects) {
-            val objRect = RectF(
-                (obj.left * uniformScaleFactor) + xOffset,
-                (obj.top * uniformScaleFactor) + yOffset, 
-                (obj.right * uniformScaleFactor) + xOffset,
-                (obj.bottom * uniformScaleFactor) + yOffset
-            )
-            
-            val objPaint = Paint().apply {
-                color = Color.GRAY
-                style = Paint.Style.STROKE
-                strokeWidth = 2f
-            }
-            canvas.drawRect(objRect, objPaint)
-            
-            val objText = Paint().apply {
-                color = Color.GRAY
-                textSize = 20f
-                isAntiAlias = true
-            }
-            canvas.drawText(
-                "Best Contour",
-                objRect.left,
-                objRect.top - 10,
-                objText
-            )
-            
-            // Draw distance line to MediaPipe face if available (like Python)
-            if (lastFaceRegions.isNotEmpty()) {
-                val mediaypipeFace = lastFaceRegions.first()
-                val faceRect = RectF(
-                    (mediaypipeFace.left * uniformScaleFactor) + xOffset,
-                    (mediaypipeFace.top * uniformScaleFactor) + yOffset,
-                    (mediaypipeFace.right * uniformScaleFactor) + xOffset,
-                    (mediaypipeFace.bottom * uniformScaleFactor) + yOffset
-                )
-                
-                val faceCenterX = faceRect.left + (faceRect.right - faceRect.left) / 2
-                val faceCenterY = faceRect.top + (faceRect.bottom - faceRect.top) / 2
-                val objCenterX = objRect.left + (objRect.right - objRect.left) / 2
-                val objCenterY = objRect.top + (objRect.bottom - objRect.top) / 2
-                
-                val distance = kotlin.math.sqrt(
-                    ((faceCenterX - objCenterX) * (faceCenterX - objCenterX) + 
-                     (faceCenterY - objCenterY) * (faceCenterY - objCenterY)).toDouble()
-                ).toFloat() / uniformScaleFactor // Convert back to original scale
-                
-                // Color code the line based on distance (Python logic)
-                val lineColor = when {
-                    distance < 10f -> Color.GREEN     // Very close - max speed
-                    distance < 25f -> Color.CYAN      // Close - high speed  
-                    distance < 50f -> Color.YELLOW    // Medium - medium speed
-                    distance < 80f -> Color.rgb(255, 165, 0) // Orange - slow speed
-                    distance < 120f -> Color.rgb(255, 100, 0) // Dark orange - very slow
-                    else -> Color.RED                 // Red - minimal speed
-                }
-                
-                val linePaint = Paint().apply {
-                    color = lineColor
-                    strokeWidth = 3f
-                }
-                canvas.drawLine(faceCenterX, faceCenterY, objCenterX, objCenterY, linePaint)
-                
-                val distanceText = Paint().apply {
-                    color = lineColor
-                    textSize = 18f
-                    isAntiAlias = true
-                    isFakeBoldText = true
-                }
-                canvas.drawText(
-                    "${distance.toInt()}px",
-                    (faceCenterX + objCenterX) / 2,
-                    (faceCenterY + objCenterY) / 2,
-                    distanceText
-                )
-            }
-        }
+        // OLD LINE-BASED DRAWING REMOVED - Using pixel-based contrast only
         
         // Draw the consistent face (green with "FACE" label like Python)
         lastConsistentFace?.let { consistentFace ->
@@ -535,8 +458,8 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
             setShadowLayer(2f, 1f, 1f, Color.BLACK)
         }
         
-        canvas.drawText("Detected: ${currentObjects.size}", 20f, 400f, infoPaint)
-        canvas.drawText("Consistent: ${if (lastConsistentFace != null) "Yes" else "No"}", 20f, 440f, infoPaint)
+        canvas.drawText("Face Features: PIXELS ONLY", 20f, 400f, infoPaint)
+        canvas.drawText("Detection: INSIDE FACE", 20f, 440f, infoPaint)
         canvas.drawText("Reset Counter: $consistencyResetCounter", 20f, 480f, infoPaint)
         
         // Show Python-style performance info
@@ -1102,10 +1025,8 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
             grayCurrentMat.release()
             
             // Update object tracking system (Python version logic)
-            updateObjectTracking()
-            
-            // CONTRAST HEATMAP: Update heatmap based on contrast contours
-            updateContrastBasedHeatmap(currentMat)
+            // FAST: Pixel-based system handles all visualization - no additional processing needed
+            Log.d("OverlayView", "Pixel contrast processing complete")
             
         } finally {
             lock.unlock()
@@ -1130,16 +1051,7 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
             val testW = currentMat.cols() / 2
             val testH = currentMat.rows() / 2
             
-            // Create multiple test objects to generate some data
-            for (i in 0..4) {
-                val offsetX = centerX + (i * testW / 10)
-                val offsetY = centerY + (i * testH / 10)
-                val objW = testW / 5
-                val objH = testH / 5
-                
-                currentObjects.add(FaceRect(offsetX, offsetY, offsetX + objW, offsetY + objH))
-                Log.d("OverlayView", "EMERGENCY: Added fallback object $i at ${offsetX},${offsetY}")
-            }
+            // FAST EMERGENCY: Skip object creation, go directly to pixel generation
             
             // EMERGENCY: Initialize pixel system and add some fallback pixel activity
             initializePixelContrastSystem(currentMat.cols(), currentMat.rows())
@@ -1166,8 +1078,7 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
             
             Log.d("OverlayView", "EMERGENCY: Created fallback pixel ring pattern")
             
-            // Still call heatmap update to generate data
-            updateContrastBasedHeatmap(currentMat)
+            // Emergency pixels created - no need for additional heatmap processing
             return
         }
         
@@ -1217,18 +1128,18 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
             prevFaceRegion.release()
         }
         
-        // Apply thresholding with multiple approaches for better detection
+        // FACE-INSIDE DETECTION: Use inverted thresholding to detect features INSIDE face
         val thresholdMat = Mat()
         if (useFrameDiff && diffMat != null) {
-            // Use very low threshold for motion detection
+            // Motion detection - keep areas that changed (normal threshold)
             val motionThreshold = max(10.0, dynamicThreshold * 0.3)
             Imgproc.threshold(diffMat, thresholdMat, motionThreshold, 255.0, Imgproc.THRESH_BINARY)
             Log.d("OverlayView", "Applied motion threshold: ${String.format("%.1f", motionThreshold)}")
         } else {
-            // Use contrast enhancement with adaptive threshold
-            val contrastThreshold = max(20.0, dynamicThreshold * 0.5)
-            Imgproc.threshold(enhancedFace, thresholdMat, contrastThreshold, 255.0, Imgproc.THRESH_BINARY)
-            Log.d("OverlayView", "Applied contrast threshold: ${String.format("%.1f", contrastThreshold)}")
+            // REVERSED DETECTION: Use THRESH_BINARY_INV to detect DARK features (eyes, nose, mouth) inside face
+            val faceFeatureThreshold = max(80.0, dynamicThreshold * 0.8) // Higher threshold for face features
+            Imgproc.threshold(enhancedFace, thresholdMat, faceFeatureThreshold, 255.0, Imgproc.THRESH_BINARY_INV)
+            Log.d("OverlayView", "Applied INVERTED face feature threshold: ${String.format("%.1f", faceFeatureThreshold)}")
         }
         
         // Apply morphological operations to clean up
@@ -1251,55 +1162,8 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         // UPDATE PIXEL CONTRAST: Convert contours to pixel intensity map
         updatePixelContrastFromContours(contours, faceX, faceY, faceW, faceH)
         
-        // Filter contours (EXTREMELY permissive for any motion)
-        var validContoursFound = 0
-        for ((index, contour) in contours.withIndex()) {
-            val area = Imgproc.contourArea(contour)
-            val boundingRect = Imgproc.boundingRect(contour)
-            
-            // EXTREMELY permissive filtering - detect ANY change
-            if (area > 1.0 && boundingRect.width > 1 && boundingRect.height > 1) {
-                // Convert back to full frame coordinates
-                val fullX = faceX + boundingRect.x
-                val fullY = faceY + boundingRect.y
-                val fullW = boundingRect.width
-                val fullH = boundingRect.height
-                
-                currentObjects.add(FaceRect(fullX, fullY, fullX + fullW, fullY + fullH))
-                validContoursFound++
-                Log.d("OverlayView", "Added contrast object $index: area=${String.format("%.1f", area)}, rect=${fullX},${fullY},${fullW},${fullH}")
-            }
-        }
-        
-        // FALLBACK: If no contours found, create some test objects for debugging
-        if (validContoursFound == 0 && contours.size == 0) {
-            Log.d("OverlayView", "NO CONTOURS DETECTED - Creating fallback test objects")
-            
-            // Add center region as a test object
-            val centerX = faceX + faceW / 4
-            val centerY = faceY + faceH / 4
-            val testW = faceW / 2
-            val testH = faceH / 2
-            
-            currentObjects.add(FaceRect(centerX, centerY, centerX + testW, centerY + testH))
-            Log.d("OverlayView", "Added FALLBACK test object: rect=${centerX},${centerY},${testW},${testH}")
-            
-            // Add corner regions as additional test objects
-            val quarterW = faceW / 4
-            val quarterH = faceH / 4
-            
-            listOf(
-                Pair(faceX + quarterW, faceY + quarterH),           // Top-left quarter
-                Pair(faceX + 3 * quarterW, faceY + quarterH),      // Top-right quarter
-                Pair(faceX + quarterW, faceY + 3 * quarterH),      // Bottom-left quarter
-                Pair(faceX + 3 * quarterW, faceY + 3 * quarterH)   // Bottom-right quarter
-            ).forEachIndexed { idx, (x, y) ->
-                currentObjects.add(FaceRect(x, y, x + quarterW / 2, y + quarterH / 2))
-                Log.d("OverlayView", "Added FALLBACK corner object $idx: rect=${x},${y},${quarterW / 2},${quarterH / 2}")
-            }
-        }
-        
-        Log.d("OverlayView", "TOTAL CONTRAST OBJECTS: ${currentObjects.size} (${validContoursFound} real + ${currentObjects.size - validContoursFound} fallback)")
+        // FAST PROCESSING: Skip object creation, go directly to pixel processing
+        Log.d("OverlayView", "Found ${contours.size} face feature contours - processing pixels directly")
         
         // Create contrast bitmap for display
         val contrastBitmap = createContrastBitmap(cleanMat)
@@ -1589,11 +1453,11 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         }
         
         var visiblePixels = 0
-        val pixelSize = 2f // Size of each pixel square
+        val pixelSize = 3f // Larger pixels for better visibility
         
-        // Calculate scale factors
-        val scaleX = width.toFloat() / contrastFrameWidth
-        val scaleY = height.toFloat() / contrastFrameHeight
+        // Use the same scale factors as MediaPipe face detection for proper alignment
+        val scaleX = uniformScaleFactor
+        val scaleY = uniformScaleFactor
         
         for (y in 0 until contrastFrameHeight step 2) { // Skip every other pixel for performance
             for (x in 0 until contrastFrameWidth step 2) {
@@ -1609,15 +1473,15 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
                         
                         paint.color = Color.argb(alpha, brightness, 0, 0) // Red with intensity-based alpha/brightness
                         
-                        // Draw pixel as small rectangle
-                        val screenX = x * scaleX
-                        val screenY = y * scaleY
+                        // Draw pixel as small rectangle with proper alignment
+                        val screenX = (x * scaleX) + xOffset
+                        val screenY = (y * scaleY) + yOffset
                         
                         canvas.drawRect(
                             screenX, 
                             screenY, 
-                            screenX + pixelSize * scaleX, 
-                            screenY + pixelSize * scaleY, 
+                            screenX + pixelSize, 
+                            screenY + pixelSize, 
                             paint
                         )
                         visiblePixels++
