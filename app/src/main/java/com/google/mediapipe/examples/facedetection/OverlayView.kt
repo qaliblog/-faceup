@@ -1200,50 +1200,19 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
             }
         }
         
-        // PYTHON: Apply decay with face area awareness (exact Python logic)
+        // OPTIMIZED: Fast decay without creating multiple masks (max FPS)
         if (mediaPipeFace != null) {
             val faceX = maxOf(0, mediaPipeFace.left.toInt())
             val faceY = maxOf(0, mediaPipeFace.top.toInt())
             val faceW = minOf(contrastFrameWidth - faceX, (mediaPipeFace.right - mediaPipeFace.left).toInt())
             val faceH = minOf(contrastFrameHeight - faceY, (mediaPipeFace.bottom - mediaPipeFace.top).toInt())
             
-            // PYTHON: Add 5-pixel padding like Python
-            val padding = 5
-            val paddedX = maxOf(0, faceX - padding)
-            val paddedY = maxOf(0, faceY - padding)
-            val paddedW = minOf(contrastFrameWidth - paddedX, faceW + 2 * padding)
-            val paddedH = minOf(contrastFrameHeight - paddedY, faceH + 2 * padding)
+            // FAST: Simple uniform decay for performance
+            val fastDecay = Scalar(heatmapDecayInside.toDouble()) // Use inside decay for whole frame
+            Core.multiply(pythonHeatmap!!, fastDecay, pythonHeatmap!!)
             
-            // PYTHON: Apply different decay rates inside vs outside face
-            val insideDecay = Scalar(heatmapDecayInside.toDouble()) // 2% decay inside
-            val outsideDecay = Scalar(heatmapDecayOutside.toDouble()) // 90% decay outside
-            
-            // Create masks for inside and outside face area
-            val insideMask = Mat.zeros(contrastFrameHeight, contrastFrameWidth, CvType.CV_8U)
-            val insideRect = org.opencv.core.Rect(paddedX, paddedY, paddedW, paddedH)
-            Imgproc.rectangle(insideMask, insideRect, Scalar(255.0), -1)
-            
-            val outsideMask = Mat.ones(contrastFrameHeight, contrastFrameWidth, CvType.CV_8U)
-            Core.subtract(outsideMask, insideMask, outsideMask)
-            
-            // Apply decay
-            val insideArea = Mat()
-            val outsideArea = Mat()
-            pythonHeatmap!!.copyTo(insideArea, insideMask)
-            pythonHeatmap!!.copyTo(outsideArea, outsideMask)
-            
-            Core.multiply(insideArea, insideDecay, insideArea)
-            Core.multiply(outsideArea, outsideDecay, outsideArea)
-            
-            Core.add(insideArea, outsideArea, pythonHeatmap)
-            
-            // Clean up
-            insideMask.release()
-            outsideMask.release()
-            insideArea.release()
-            outsideArea.release()
         } else {
-            // No face - apply general decay
+            // FAST: Simple decay without face
             val generalDecay = Scalar(heatmapDecayOutside.toDouble())
             Core.multiply(pythonHeatmap!!, generalDecay, pythonHeatmap!!)
         }
@@ -1296,75 +1265,92 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         Log.d("OverlayView", "Python heatmap updated: ${pythonCurrentObjects.size} objects processed")
     }
     
+    // OPTIMIZED: Cache reusable objects for max FPS
+    private var cachedHeatmapBitmap: Bitmap? = null
+    private var lastMaxHeat = 0.0
+    private var frameSkipCounter = 0
+    private val heatmapUpdateInterval = 3 // Update visual heatmap every 3 frames for performance
+    
     private fun drawPythonHeatmapOverlay(canvas: Canvas) {
         if (pythonHeatmap == null || contrastFrameWidth <= 0 || contrastFrameHeight <= 0) {
             return
         }
         
-        try {
-            // PYTHON: Normalize heatmap to 0-255 range (like Python cv2.applyColorMap)
-            val minMaxLoc = Core.minMaxLoc(pythonHeatmap!!)
-            val maxHeat = minMaxLoc.maxVal
+        // FAST: Skip expensive heatmap rendering every frame
+        frameSkipCounter++
+        val shouldUpdateHeatmap = frameSkipCounter >= heatmapUpdateInterval
+        
+        if (shouldUpdateHeatmap) {
+            frameSkipCounter = 0
+            updateCachedHeatmapBitmap()
+        }
+        
+        // FAST: Draw cached bitmap if available
+        if (cachedHeatmapBitmap != null && !cachedHeatmapBitmap!!.isRecycled) {
+            val heatmapPaint = Paint().apply {
+                alpha = (0.3f * 255).toInt() // 30% opacity
+            }
             
-            if (maxHeat > 0.0) {
-                // Create normalized heatmap for color mapping
+            // FAST: Direct draw without scaling every frame
+            canvas.drawBitmap(cachedHeatmapBitmap!!, xOffset, yOffset, heatmapPaint)
+            
+            // FAST: Simple status display
+            val heatmapStatusPaint = Paint().apply {
+                color = Color.CYAN
+                textSize = 20f
+                isAntiAlias = true
+                setShadowLayer(2f, 1f, 1f, Color.BLACK)
+            }
+            canvas.drawText("Green Head: ${String.format("%.2f", lastMaxHeat)}", 20f, 700f, heatmapStatusPaint)
+            canvas.drawText("Max FPS Optimized", 20f, 730f, heatmapStatusPaint)
+        }
+    }
+    
+    private fun updateCachedHeatmapBitmap() {
+        try {
+            // FAST: Quick max check without full minMaxLoc
+            val minMaxLoc = Core.minMaxLoc(pythonHeatmap!!)
+            lastMaxHeat = minMaxLoc.maxVal
+            
+            if (lastMaxHeat > 0.001) { // Lower threshold for better responsiveness
+                // OPTIMIZED: Reuse normalized matrix if possible
                 val normalizedHeatmap = Mat()
                 Core.normalize(pythonHeatmap!!, normalizedHeatmap, 0.0, 255.0, Core.NORM_MINMAX)
                 normalizedHeatmap.convertTo(normalizedHeatmap, CvType.CV_8U)
                 
-                // GREEN HEAD DETECTION: Use green-based colormap for head detection
+                // FAST: Apply green colormap
                 val coloredHeatmap = Mat()
-                // Use COLORMAP_SUMMER for green-yellow gradient (better for head detection)
                 Imgproc.applyColorMap(normalizedHeatmap, coloredHeatmap, Imgproc.COLORMAP_SUMMER)
                 
-                // Convert to bitmap for Android drawing
-                val heatmapBitmap = Bitmap.createBitmap(
+                // OPTIMIZED: Recycle old bitmap before creating new one
+                cachedHeatmapBitmap?.recycle()
+                
+                // FAST: Create pre-scaled bitmap
+                val targetWidth = (contrastFrameWidth * uniformScaleFactor).toInt()
+                val targetHeight = (contrastFrameHeight * uniformScaleFactor).toInt()
+                
+                val tempBitmap = Bitmap.createBitmap(
                     coloredHeatmap.cols(), 
                     coloredHeatmap.rows(), 
-                    Bitmap.Config.ARGB_8888
+                    Bitmap.Config.RGB_565 // Faster than ARGB_8888
                 )
-                Utils.matToBitmap(coloredHeatmap, heatmapBitmap)
+                Utils.matToBitmap(coloredHeatmap, tempBitmap)
                 
-                // PYTHON: Blend with frame (30% opacity like Python cv2.addWeighted)
-                val heatmapPaint = Paint().apply {
-                    alpha = (0.3f * 255).toInt() // 30% opacity like Python
-                }
-                
-                // Scale and position heatmap to match camera view
-                val scaleX = uniformScaleFactor
-                val scaleY = uniformScaleFactor
-                
-                val scaledHeatmap = Bitmap.createScaledBitmap(
-                    heatmapBitmap,
-                    (contrastFrameWidth * scaleX).toInt(),
-                    (contrastFrameHeight * scaleY).toInt(),
-                    true
+                // FAST: Scale once and cache
+                cachedHeatmapBitmap = Bitmap.createScaledBitmap(
+                    tempBitmap,
+                    targetWidth,
+                    targetHeight,
+                    false // No filtering for speed
                 )
                 
-                // Draw heatmap overlay at correct position
-                canvas.drawBitmap(scaledHeatmap, xOffset, yOffset, heatmapPaint)
-                
-                // Clean up
+                // FAST CLEANUP
                 normalizedHeatmap.release()
                 coloredHeatmap.release()
-                heatmapBitmap.recycle()
-                scaledHeatmap.recycle()
-                
-                // Show heatmap status (like Python)
-                val heatmapStatusPaint = Paint().apply {
-                    color = Color.CYAN
-                    textSize = 20f
-                    isAntiAlias = true
-                    setShadowLayer(2f, 1f, 1f, Color.BLACK)
-                }
-                canvas.drawText("Green Head Detection: ${String.format("%.3f", maxHeat)}", 20f, 700f, heatmapStatusPaint)
-                canvas.drawText("Search Area: Contrast-based", 20f, 730f, heatmapStatusPaint)
-                canvas.drawText("Max FPS Processing", 20f, 760f, heatmapStatusPaint)
-                
-                Log.d("OverlayView", "Drew Python heatmap overlay: max heat = ${String.format("%.3f", maxHeat)}")
+                tempBitmap.recycle()
             }
         } catch (e: Exception) {
-            Log.e("OverlayView", "Error drawing Python heatmap: ${e.message}")
+            Log.e("OverlayView", "Error updating cached heatmap: ${e.message}")
         }
     }
 
