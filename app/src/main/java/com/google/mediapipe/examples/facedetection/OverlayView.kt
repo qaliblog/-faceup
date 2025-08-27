@@ -479,13 +479,13 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
             isAntiAlias = true
             setShadowLayer(1f, 1f, 1f, Color.BLACK)
         }
-        canvas.drawText("PYTHON-STYLE CONTRAST DETECTION", 20f, 520f, perfPaint)
+        canvas.drawText("OPTIMIZED CONTRAST DETECTION", 20f, 520f, perfPaint)
         canvas.drawText("MediaPipe Interval: 0.2s", 20f, 550f, perfPaint)
-        canvas.drawText("HSV Skin Detection", 20f, 580f, perfPaint)
+        canvas.drawText("Search Area Only - Max FPS", 20f, 580f, perfPaint)
         
-        // Show Python object count
-        val pythonObjectCount = pythonCurrentObjects.size
-        canvas.drawText("Python Objects: ${pythonObjectCount}", 20f, 610f, perfPaint)
+        // Show contrast-based object count
+        val contrastObjectCount = pythonCurrentObjects.size
+        canvas.drawText("Contrast Objects: ${contrastObjectCount}", 20f, 610f, perfPaint)
         canvas.drawText("Stored MediaPipe Pos: ${if (storedMediaPipePosition != null) "YES" else "NO"}", 20f, 640f, perfPaint)
         canvas.drawText("Heatmap Active: ${if (pythonHeatmap != null) "YES" else "NO"}", 20f, 670f, perfPaint)
         
@@ -1030,7 +1030,7 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
     }
     
     private fun performPythonContrastDetection(currentMat: Mat, mediaPipeFace: RectF) {
-        // PYTHON EXACT REPLICATION: HSV skin detection inside MediaPipe face area
+        // OPTIMIZED: Contrast detection ONLY in search area for max FPS
         val faceX = maxOf(0, mediaPipeFace.left.toInt())
         val faceY = maxOf(0, mediaPipeFace.top.toInt())
         val faceW = minOf(currentMat.cols() - faceX, (mediaPipeFace.right - mediaPipeFace.left).toInt())
@@ -1038,14 +1038,14 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         
         if (faceW <= 0 || faceH <= 0) return
         
-        // PYTHON: Define search area with minimal padding (5 pixels like Python)
+        // OPTIMIZED: Define search area with minimal padding (5 pixels like Python)
         val searchPadding = 5
         val searchX = maxOf(0, faceX - searchPadding)
         val searchY = maxOf(0, faceY - searchPadding)
         val searchW = minOf(currentMat.cols() - searchX, faceW + 2 * searchPadding)
         val searchH = minOf(currentMat.rows() - searchY, faceH + 2 * searchPadding)
         
-        // PYTHON: Extract search region
+        // FAST: Extract ONLY search region for processing (not full frame)
         val searchRegion = Mat(currentMat, org.opencv.core.Rect(searchX, searchY, searchW, searchH))
         
         if (searchRegion.size().area() <= 0) {
@@ -1053,33 +1053,45 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
             return
         }
         
-        // PYTHON: Convert to HSV for skin tone detection (exact Python values)
-        val hsvRegion = Mat()
-        Imgproc.cvtColor(searchRegion, hsvRegion, Imgproc.COLOR_RGB2HSV)
+        // CONTRAST DETECTION: Convert search area to grayscale for contrast analysis
+        val graySearchRegion = Mat()
+        Imgproc.cvtColor(searchRegion, graySearchRegion, Imgproc.COLOR_RGB2GRAY)
         
-        // PYTHON: Exact skin tone range from Python code
-        val lowerSkin = Scalar(0.0, 30.0, 60.0, 0.0)
-        val upperSkin = Scalar(20.0, 255.0, 255.0, 255.0)
+        // DYNAMIC CONTRAST: Apply contrast enhancement only to search area
+        val clahe = Imgproc.createCLAHE(2.0, Size(8.0, 8.0))
+        val enhancedSearchRegion = Mat()
+        clahe.apply(graySearchRegion, enhancedSearchRegion)
         
-        // PYTHON: Create mask for skin tone
-        val mask = Mat()
-        Core.inRange(hsvRegion, lowerSkin, upperSkin, mask)
+        // FAST THRESHOLD: Calculate dynamic threshold for search area only
+        val meanStdDev = MatOfDouble()
+        val mean = MatOfDouble()
+        Core.meanStdDev(enhancedSearchRegion, mean, meanStdDev)
         
-        // PYTHON: Fast morphological operations (exact Python kernel)
+        val meanArray = mean.toArray()
+        val stdArray = meanStdDev.toArray()
+        val searchMean = if (meanArray.isNotEmpty()) meanArray[0] else 128.0
+        val searchStd = if (stdArray.isNotEmpty()) stdArray[0] else 20.0
+        
+        // CONTRAST-BASED THRESHOLD: Use contrast characteristics
+        val contrastThreshold = searchMean + (searchStd * 0.5) // Adaptive threshold
+        
+        // CONTOUR DETECTION: Find contours in search area based on contrast
+        val thresholdMat = Mat()
+        Imgproc.threshold(enhancedSearchRegion, thresholdMat, contrastThreshold, 255.0, Imgproc.THRESH_BINARY)
+        
+        // FAST MORPHOLOGY: Clean up contours
         val kernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, Size(3.0, 3.0))
-        val erodedMask = Mat()
-        val dilatedMask = Mat()
-        Imgproc.erode(mask, erodedMask, kernel, Point(-1.0, -1.0), 1)
-        Imgproc.dilate(erodedMask, dilatedMask, kernel, Point(-1.0, -1.0), 1)
+        val cleanMat = Mat()
+        Imgproc.morphologyEx(thresholdMat, cleanMat, Imgproc.MORPH_OPEN, kernel)
         
-        // PYTHON: Find contours (exact Python parameters)
+        // FIND CONTOURS: Based on contrast in search area only
         val contours = mutableListOf<MatOfPoint>()
         val hierarchy = Mat()
-        Imgproc.findContours(dilatedMask, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
+        Imgproc.findContours(cleanMat, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
         
-        Log.d("OverlayView", "Python HSV detection: Found ${contours.size} contours in search area")
+        Log.d("OverlayView", "CONTRAST: Found ${contours.size} contours in search area (${searchW}x${searchH})")
         
-        // PYTHON: Filter contours by size and aspect ratio (exact Python logic)
+        // FAST PROCESSING: Filter contours by size and aspect ratio for max FPS
         val mediaPipeSize = faceW * faceH
         val mediaPipeCenterX = faceX + faceW / 2
         val mediaPipeCenterY = faceY + faceH / 2
@@ -1090,19 +1102,19 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
             val boundingRect = Imgproc.boundingRect(contour)
             val contourSize = boundingRect.width * boundingRect.height
             
-            // PYTHON: Size ratio filtering (30% to 300% of MediaPipe face size)
+            // FAST FILTERING: Relaxed size filtering for better detection
             val sizeRatio = contourSize.toFloat() / mediaPipeSize
-            if (sizeRatio in 0.3f..3.0f) {
-                // PYTHON: Aspect ratio filtering (0.5 to 2.0)
+            if (sizeRatio in 0.1f..5.0f) { // More permissive for contrast-based detection
+                // FAST FILTERING: Relaxed aspect ratio
                 val aspectRatio = boundingRect.width.toFloat() / boundingRect.height
-                if (aspectRatio in 0.5f..2.0f) {
-                    // PYTHON: Convert back to full frame coordinates
+                if (aspectRatio in 0.3f..3.0f) { // More permissive
+                    // COORDINATES: Convert search area coordinates to full frame coordinates
                     val fullX = searchX + boundingRect.x
                     val fullY = searchY + boundingRect.y
                     val fullW = boundingRect.width
                     val fullH = boundingRect.height
                     
-                    // PYTHON: Calculate score based on distance and size similarity (exact Python logic)
+                    // SCORING: Distance-based scoring for best contour selection
                     val objCenterX = fullX + fullW / 2
                     val objCenterY = fullY + fullH / 2
                     val distance = kotlin.math.sqrt(
@@ -1111,14 +1123,14 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
                     ).toFloat()
                     
                     val sizeSimilarity = kotlin.math.abs(1.0f - (contourSize.toFloat() / mediaPipeSize))
-                    val score = distance + (sizeSimilarity * 50f) // Python: Weight size similarity
+                    val score = distance + (sizeSimilarity * 30f) // Reduced weight for faster processing
                     
                     potentialObjects.add(arrayOf(fullX, fullY, fullW, fullH, contourSize, score))
                 }
             }
         }
         
-        // PYTHON: Find the best object (lowest score) - Python selects only ONE object
+        // FAST SELECTION: Find the best contrast-based object (lowest score)
         if (potentialObjects.isNotEmpty()) {
             val bestObject = potentialObjects.minByOrNull { it[5] as Float }
             if (bestObject != null) {
@@ -1128,23 +1140,26 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
                 val objH = bestObject[3] as Int
                 
                 pythonCurrentObjects.add(FaceRect(objX, objY, objX + objW, objY + objH))
-                Log.d("OverlayView", "Python: Selected best object at ${objX},${objY} size ${objW}x${objH}")
+                Log.d("OverlayView", "CONTRAST: Selected best object at ${objX},${objY} size ${objW}x${objH}")
             }
         } else {
-            Log.d("OverlayView", "Python: No valid contours found, using fallback")
-            // PYTHON FALLBACK: Add MediaPipe face itself as object
+            Log.d("OverlayView", "CONTRAST: No valid contours found, using MediaPipe face")
+            // FALLBACK: Add MediaPipe face itself as object
             pythonCurrentObjects.add(FaceRect(faceX, faceY, faceX + faceW, faceY + faceH))
         }
         
-        // Clean up
+        // FAST CLEANUP: Release only the matrices we created
         contours.forEach { it.release() }
         hierarchy.release()
         searchRegion.release()
-        hsvRegion.release()
-        mask.release()
-        erodedMask.release()
-        dilatedMask.release()
+        graySearchRegion.release()
+        enhancedSearchRegion.release()
+        meanStdDev.release()
+        mean.release()
+        thresholdMat.release()
+        cleanMat.release()
         kernel.release()
+        clahe.release()
     }
     
     private fun initializePythonHeatmap(width: Int, height: Int) {
@@ -1297,9 +1312,10 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
                 Core.normalize(pythonHeatmap!!, normalizedHeatmap, 0.0, 255.0, Core.NORM_MINMAX)
                 normalizedHeatmap.convertTo(normalizedHeatmap, CvType.CV_8U)
                 
-                // PYTHON: Apply JET colormap (exact Python cv2.COLORMAP_JET equivalent)
+                // GREEN HEAD DETECTION: Use green-based colormap for head detection
                 val coloredHeatmap = Mat()
-                Imgproc.applyColorMap(normalizedHeatmap, coloredHeatmap, Imgproc.COLORMAP_JET)
+                // Use COLORMAP_SUMMER for green-yellow gradient (better for head detection)
+                Imgproc.applyColorMap(normalizedHeatmap, coloredHeatmap, Imgproc.COLORMAP_SUMMER)
                 
                 // Convert to bitmap for Android drawing
                 val heatmapBitmap = Bitmap.createBitmap(
@@ -1341,9 +1357,9 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
                     isAntiAlias = true
                     setShadowLayer(2f, 1f, 1f, Color.BLACK)
                 }
-                canvas.drawText("Python Heatmap: ${String.format("%.3f", maxHeat)} (JET)", 20f, 700f, heatmapStatusPaint)
-                canvas.drawText("Inside Face: 2% Decay/Frame", 20f, 730f, heatmapStatusPaint)
-                canvas.drawText("Outside Face: 90% Decay/Frame", 20f, 760f, heatmapStatusPaint)
+                canvas.drawText("Green Head Detection: ${String.format("%.3f", maxHeat)}", 20f, 700f, heatmapStatusPaint)
+                canvas.drawText("Search Area: Contrast-based", 20f, 730f, heatmapStatusPaint)
+                canvas.drawText("Max FPS Processing", 20f, 760f, heatmapStatusPaint)
                 
                 Log.d("OverlayView", "Drew Python heatmap overlay: max heat = ${String.format("%.3f", maxHeat)}")
             }
