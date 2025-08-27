@@ -1159,7 +1159,7 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         thresholdMat.release()
         cleanMat.release()
         kernel.release()
-        clahe.release()
+        // Note: clahe object is automatically managed by OpenCV
     }
     
     private fun initializePythonHeatmap(width: Int, height: Int) {
