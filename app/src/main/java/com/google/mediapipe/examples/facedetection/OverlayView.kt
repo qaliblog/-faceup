@@ -1053,16 +1053,16 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
             return
         }
         
-        // CONTRAST DETECTION: Convert search area to grayscale for contrast analysis
+        // FACE-ONLY DETECTION: Focus on facial features using contrast
         val graySearchRegion = Mat()
         Imgproc.cvtColor(searchRegion, graySearchRegion, Imgproc.COLOR_RGB2GRAY)
         
-        // DYNAMIC CONTRAST: Apply contrast enhancement only to search area
-        val clahe = Imgproc.createCLAHE(2.0, Size(8.0, 8.0))
+        // FACE FEATURES: Enhance contrast for eyes, nose, mouth detection
+        val clahe = Imgproc.createCLAHE(3.0, Size(4.0, 4.0)) // Stronger contrast for facial features
         val enhancedSearchRegion = Mat()
         clahe.apply(graySearchRegion, enhancedSearchRegion)
         
-        // FAST THRESHOLD: Calculate dynamic threshold for search area only
+        // FACE-SPECIFIC THRESHOLD: Detect dark features (eyes, nose, mouth) in face
         val meanStdDev = MatOfDouble()
         val mean = MatOfDouble()
         Core.meanStdDev(enhancedSearchRegion, mean, meanStdDev)
@@ -1072,49 +1072,47 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         val searchMean = if (meanArray.isNotEmpty()) meanArray[0] else 128.0
         val searchStd = if (stdArray.isNotEmpty()) stdArray[0] else 20.0
         
-        // CONTRAST-BASED THRESHOLD: Use contrast characteristics
-        val contrastThreshold = searchMean + (searchStd * 0.5) // Adaptive threshold
-        
-        // CONTOUR DETECTION: Find contours in search area based on contrast
+        // FACIAL FEATURES DETECTION: Use inverted threshold to find dark features
+        val faceFeatureThreshold = searchMean - (searchStd * 0.3) // Lower threshold for dark features
         val thresholdMat = Mat()
-        Imgproc.threshold(enhancedSearchRegion, thresholdMat, contrastThreshold, 255.0, Imgproc.THRESH_BINARY)
+        Imgproc.threshold(enhancedSearchRegion, thresholdMat, faceFeatureThreshold, 255.0, Imgproc.THRESH_BINARY_INV)
         
-        // FAST MORPHOLOGY: Clean up contours
-        val kernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, Size(3.0, 3.0))
+        // FACE MORPHOLOGY: Small kernel to preserve facial features
+        val kernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, Size(2.0, 2.0))
         val cleanMat = Mat()
-        Imgproc.morphologyEx(thresholdMat, cleanMat, Imgproc.MORPH_OPEN, kernel)
+        Imgproc.morphologyEx(thresholdMat, cleanMat, Imgproc.MORPH_CLOSE, kernel) // Close gaps in features
         
         // FIND CONTOURS: Based on contrast in search area only
         val contours = mutableListOf<MatOfPoint>()
         val hierarchy = Mat()
         Imgproc.findContours(cleanMat, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
         
-        Log.d("OverlayView", "CONTRAST: Found ${contours.size} contours in search area (${searchW}x${searchH})")
+        Log.d("OverlayView", "FACE FEATURES: Found ${contours.size} facial feature contours")
         
-        // FAST PROCESSING: Filter contours by size and aspect ratio for max FPS
+        // FACE-SPECIFIC FILTERING: Look for eye/nose/mouth sized features
         val mediaPipeSize = faceW * faceH
         val mediaPipeCenterX = faceX + faceW / 2
         val mediaPipeCenterY = faceY + faceH / 2
         
-        val potentialObjects = mutableListOf<Array<Any>>() // [x, y, w, h, size, score]
+        val faceFeatures = mutableListOf<Array<Any>>() // [x, y, w, h, size, score]
         
         for (contour in contours) {
             val boundingRect = Imgproc.boundingRect(contour)
             val contourSize = boundingRect.width * boundingRect.height
             
-            // FAST FILTERING: Relaxed size filtering for better detection
+            // FACIAL FEATURE SIZE: Eyes/nose/mouth are small relative to face
             val sizeRatio = contourSize.toFloat() / mediaPipeSize
-            if (sizeRatio in 0.1f..5.0f) { // More permissive for contrast-based detection
-                // FAST FILTERING: Relaxed aspect ratio
+            if (sizeRatio in 0.005f..0.3f) { // Small features only (0.5% to 30% of face)
+                // FACIAL FEATURE SHAPE: Eyes are wider, nose/mouth have different ratios
                 val aspectRatio = boundingRect.width.toFloat() / boundingRect.height
-                if (aspectRatio in 0.3f..3.0f) { // More permissive
-                    // COORDINATES: Convert search area coordinates to full frame coordinates
+                if (aspectRatio in 0.2f..4.0f) { // Allow various feature shapes
+                    // FACE POSITION: Features must be inside face area
                     val fullX = searchX + boundingRect.x
                     val fullY = searchY + boundingRect.y
                     val fullW = boundingRect.width
                     val fullH = boundingRect.height
                     
-                    // SCORING: Distance-based scoring for best contour selection
+                    // FACE CENTER CHECK: Features should be reasonably close to face center
                     val objCenterX = fullX + fullW / 2
                     val objCenterY = fullY + fullH / 2
                     val distance = kotlin.math.sqrt(
@@ -1122,30 +1120,40 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
                          (mediaPipeCenterY - objCenterY) * (mediaPipeCenterY - objCenterY)).toDouble()
                     ).toFloat()
                     
-                    val sizeSimilarity = kotlin.math.abs(1.0f - (contourSize.toFloat() / mediaPipeSize))
-                    val score = distance + (sizeSimilarity * 30f) // Reduced weight for faster processing
-                    
-                    potentialObjects.add(arrayOf(fullX, fullY, fullW, fullH, contourSize, score))
+                    // FACE AREA CHECK: Must be within face bounds
+                    val maxFaceDistance = kotlin.math.sqrt((faceW * faceW + faceH * faceH).toDouble()).toFloat() / 2
+                    if (distance <= maxFaceDistance) {
+                        val featureScore = distance + (contourSize * 0.1f) // Prefer closer, smaller features
+                        faceFeatures.add(arrayOf(fullX, fullY, fullW, fullH, contourSize, featureScore))
+                    }
                 }
             }
         }
         
-        // FAST SELECTION: Find the best contrast-based object (lowest score)
-        if (potentialObjects.isNotEmpty()) {
-            val bestObject = potentialObjects.minByOrNull { it[5] as Float }
-            if (bestObject != null) {
-                val objX = bestObject[0] as Int
-                val objY = bestObject[1] as Int
-                val objW = bestObject[2] as Int
-                val objH = bestObject[3] as Int
+        // FACE FEATURES SELECTION: Take multiple good facial features
+        if (faceFeatures.isNotEmpty()) {
+            // SORT: Get best facial features (lowest score = closest + smallest)
+            faceFeatures.sortBy { it[5] as Float }
+            
+            // TAKE MULTIPLE: Add several facial features for better detection
+            val maxFeatures = minOf(5, faceFeatures.size) // Take up to 5 best features
+            for (i in 0 until maxFeatures) {
+                val feature = faceFeatures[i]
+                val objX = feature[0] as Int
+                val objY = feature[1] as Int
+                val objW = feature[2] as Int
+                val objH = feature[3] as Int
                 
                 pythonCurrentObjects.add(FaceRect(objX, objY, objX + objW, objY + objH))
-                Log.d("OverlayView", "CONTRAST: Selected best object at ${objX},${objY} size ${objW}x${objH}")
             }
+            
+            Log.d("OverlayView", "FACE FEATURES: Selected ${maxFeatures} facial features")
         } else {
-            Log.d("OverlayView", "CONTRAST: No valid contours found, using MediaPipe face")
-            // FALLBACK: Add MediaPipe face itself as object
-            pythonCurrentObjects.add(FaceRect(faceX, faceY, faceX + faceW, faceY + faceH))
+            Log.d("OverlayView", "FACE FEATURES: No facial features found, using face center")
+            // FALLBACK: Add center point of MediaPipe face
+            val centerX = faceX + faceW / 2 - 10
+            val centerY = faceY + faceH / 2 - 10
+            pythonCurrentObjects.add(FaceRect(centerX, centerY, centerX + 20, centerY + 20))
         }
         
         // FAST CLEANUP: Release only the matrices we created
@@ -1163,195 +1171,98 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
     }
     
     private fun initializePythonHeatmap(width: Int, height: Int) {
-        if (contrastFrameWidth != width || contrastFrameHeight != height) {
-            contrastFrameWidth = width
-            contrastFrameHeight = height
-            
-            pythonHeatmap?.release()
-            pythonHeatmap = Mat.zeros(height, width, CvType.CV_32F)
-            
-            Log.d("OverlayView", "Initialized Python heatmap: ${width}x${height}")
+        // ULTRA-FAST: No matrix initialization needed for point-based system
+        contrastFrameWidth = width
+        contrastFrameHeight = height
+        
+        // FAST: Just ensure point lists are ready
+        if (faceHeatPoints.size > maxHeatPoints) {
+            faceHeatPoints.clear()
+            heatIntensities.clear()
         }
+        
+        Log.d("OverlayView", "FAST: Point-based heatmap ready for ${width}x${height}")
     }
     
     private fun updatePythonHeatmap(frameShape: Mat, mediaPipeFace: RectF?) {
-        if (pythonHeatmap == null) return
+        // ULTRA-FAST: No matrix operations, just update point list
         
-        val currentMediaPipeCenter = if (mediaPipeFace != null) {
-            val centerX = mediaPipeFace.left + (mediaPipeFace.right - mediaPipeFace.left) / 2
-            val centerY = mediaPipeFace.top + (mediaPipeFace.bottom - mediaPipeFace.top) / 2
-            Pair(centerX, centerY)
-        } else null
+        // FAST DECAY: Age existing points
+        for (i in heatIntensities.indices) {
+            heatIntensities[i] *= 0.95f // Simple decay
+        }
         
-        // PYTHON: Check if we need to reset heatmap due to MediaPipe movement
-        if (heatmapMediPipePosition != null && mediaPipeFace != null) {
-            val oldCenterX = heatmapMediPipePosition!!.left + (heatmapMediPipePosition!!.right - heatmapMediPipePosition!!.left) / 2
-            val oldCenterY = heatmapMediPipePosition!!.top + (heatmapMediPipePosition!!.bottom - heatmapMediPipePosition!!.top) / 2
-            
-            val distance = kotlin.math.sqrt(
-                ((currentMediaPipeCenter!!.first - oldCenterX) * (currentMediaPipeCenter.first - oldCenterX) + 
-                 (currentMediaPipeCenter.second - oldCenterY) * (currentMediaPipeCenter.second - oldCenterY)).toDouble()
-            ).toFloat()
-            
-            if (distance > heatmapResetDistance) {
-                // Reset heatmap if MediaPipe moved too far
-                pythonHeatmap = Mat.zeros(contrastFrameHeight, contrastFrameWidth, CvType.CV_32F)
-                Log.d("OverlayView", "Python heatmap reset - MediaPipe moved ${distance.toInt()}px")
+        // FAST CLEANUP: Remove weak points
+        val threshold = 0.1f
+        val indicesToRemove = mutableListOf<Int>()
+        for (i in heatIntensities.indices) {
+            if (heatIntensities[i] < threshold) {
+                indicesToRemove.add(i)
             }
         }
         
-        // OPTIMIZED: Fast decay without creating multiple masks (max FPS)
-        if (mediaPipeFace != null) {
-            val faceX = maxOf(0, mediaPipeFace.left.toInt())
-            val faceY = maxOf(0, mediaPipeFace.top.toInt())
-            val faceW = minOf(contrastFrameWidth - faceX, (mediaPipeFace.right - mediaPipeFace.left).toInt())
-            val faceH = minOf(contrastFrameHeight - faceY, (mediaPipeFace.bottom - mediaPipeFace.top).toInt())
-            
-            // FAST: Simple uniform decay for performance
-            val fastDecay = Scalar(heatmapDecayInside.toDouble()) // Use inside decay for whole frame
-            Core.multiply(pythonHeatmap!!, fastDecay, pythonHeatmap!!)
-            
-        } else {
-            // FAST: Simple decay without face
-            val generalDecay = Scalar(heatmapDecayOutside.toDouble())
-            Core.multiply(pythonHeatmap!!, generalDecay, pythonHeatmap!!)
+        // Remove from end to start to maintain indices
+        for (i in indicesToRemove.reversed()) {
+            if (i < faceHeatPoints.size) faceHeatPoints.removeAt(i)
+            if (i < heatIntensities.size) heatIntensities.removeAt(i)
         }
         
-        // PYTHON: Add heat for current objects (exact Python intensity logic)
+        // FAST: Add new detection points
         for (obj in pythonCurrentObjects) {
-            val objCenterX = obj.left + (obj.right - obj.left) / 2
-            val objCenterY = obj.top + (obj.bottom - obj.top) / 2
+            val objCenterX = (obj.left + obj.right) / 2f
+            val objCenterY = (obj.top + obj.bottom) / 2f
             
-            if (mediaPipeFace != null) {
-                val faceCenterX = mediaPipeFace.left + (mediaPipeFace.right - mediaPipeFace.left) / 2
-                val faceCenterY = mediaPipeFace.top + (mediaPipeFace.bottom - mediaPipeFace.top) / 2
-                
-                // PYTHON: Calculate distance-based heat intensity
-                val distanceToCenter = kotlin.math.sqrt(
-                    ((objCenterX - faceCenterX) * (objCenterX - faceCenterX) + 
-                     (objCenterY - faceCenterY) * (objCenterY - faceCenterY)).toDouble()
-                ).toFloat()
-                
-                val maxDistance = kotlin.math.sqrt(
-                    ((mediaPipeFace.width() / 2 + 5) * (mediaPipeFace.width() / 2 + 5) + 
-                     (mediaPipeFace.height() / 2 + 5) * (mediaPipeFace.height() / 2 + 5)).toDouble()
-                ).toFloat()
-                
-                val distanceRatio = minOf(distanceToCenter / maxDistance, 1.0f)
-                val heatIntensityFinal = heatIntensity * (1.0f - distanceRatio * 0.1f) // Python formula
-                
-                // PYTHON: Add heat in object area
-                val objRect = org.opencv.core.Rect(
-                    maxOf(0, obj.left),
-                    maxOf(0, obj.top),
-                    minOf(contrastFrameWidth - maxOf(0, obj.left), obj.right - obj.left),
-                    minOf(contrastFrameHeight - maxOf(0, obj.top), obj.bottom - obj.top)
-                )
-                
-                if (objRect.width > 0 && objRect.height > 0) {
-                    val heatAddition = Mat(objRect.height, objRect.width, CvType.CV_32F, Scalar(heatIntensityFinal.toDouble()))
-                    val roi = Mat(pythonHeatmap!!, objRect)
-                    Core.add(roi, heatAddition, roi)
-                    
-                    heatAddition.release()
-                    roi.release()
-                }
+            // FAST: Add point with intensity
+            faceHeatPoints.add(Pair(objCenterX, objCenterY))
+            heatIntensities.add(0.8f) // High intensity for new detection
+            
+            // LIMIT: Keep only recent points for performance
+            if (faceHeatPoints.size > maxHeatPoints) {
+                faceHeatPoints.removeAt(0)
+                heatIntensities.removeAt(0)
             }
         }
         
-        // Update stored MediaPipe position
-        heatmapMediPipePosition = mediaPipeFace
-        
-        Log.d("OverlayView", "Python heatmap updated: ${pythonCurrentObjects.size} objects processed")
+        Log.d("OverlayView", "FAST: Updated ${faceHeatPoints.size} heat points")
     }
     
-    // OPTIMIZED: Cache reusable objects for max FPS
-    private var cachedHeatmapBitmap: Bitmap? = null
-    private var lastMaxHeat = 0.0
-    private var frameSkipCounter = 0
-    private val heatmapUpdateInterval = 3 // Update visual heatmap every 3 frames for performance
+    // ULTRA-FAST: Direct drawing without matrices
+    private var faceHeatPoints = mutableListOf<Pair<Float, Float>>()
+    private var heatIntensities = mutableListOf<Float>()
+    private val maxHeatPoints = 50 // Limit points for performance
     
     private fun drawPythonHeatmapOverlay(canvas: Canvas) {
-        if (pythonHeatmap == null || contrastFrameWidth <= 0 || contrastFrameHeight <= 0) {
-            return
+        if (faceHeatPoints.isEmpty()) return
+        
+        // ULTRA-FAST: Direct drawing with Paint objects
+        val greenPaint = Paint().apply {
+            style = Paint.Style.FILL
+            alpha = 100 // 30% opacity
         }
         
-        // FAST: Skip expensive heatmap rendering every frame
-        frameSkipCounter++
-        val shouldUpdateHeatmap = frameSkipCounter >= heatmapUpdateInterval
-        
-        if (shouldUpdateHeatmap) {
-            frameSkipCounter = 0
-            updateCachedHeatmapBitmap()
+        // FAST: Draw simple green circles for detected areas
+        for (i in faceHeatPoints.indices) {
+            val point = faceHeatPoints[i]
+            val intensity = if (i < heatIntensities.size) heatIntensities[i] else 0.5f
+            
+            // GREEN INTENSITY: Vary green based on detection strength
+            val greenValue = (intensity * 255).toInt().coerceIn(0, 255)
+            greenPaint.color = Color.argb(100, 0, greenValue, 0) // Pure green
+            
+            // FAST: Draw small circles
+            val screenX = point.first * uniformScaleFactor + xOffset
+            val screenY = point.second * uniformScaleFactor + yOffset
+            canvas.drawCircle(screenX, screenY, 8f, greenPaint)
         }
         
-        // FAST: Draw cached bitmap if available
-        if (cachedHeatmapBitmap != null && !cachedHeatmapBitmap!!.isRecycled) {
-            val heatmapPaint = Paint().apply {
-                alpha = (0.3f * 255).toInt() // 30% opacity
-            }
-            
-            // FAST: Direct draw without scaling every frame
-            canvas.drawBitmap(cachedHeatmapBitmap!!, xOffset, yOffset, heatmapPaint)
-            
-            // FAST: Simple status display
-            val heatmapStatusPaint = Paint().apply {
-                color = Color.CYAN
-                textSize = 20f
-                isAntiAlias = true
-                setShadowLayer(2f, 1f, 1f, Color.BLACK)
-            }
-            canvas.drawText("Green Head: ${String.format("%.2f", lastMaxHeat)}", 20f, 700f, heatmapStatusPaint)
-            canvas.drawText("Max FPS Optimized", 20f, 730f, heatmapStatusPaint)
+        // SIMPLE STATUS
+        val statusPaint = Paint().apply {
+            color = Color.GREEN
+            textSize = 20f
+            isAntiAlias = true
         }
-    }
-    
-    private fun updateCachedHeatmapBitmap() {
-        try {
-            // FAST: Quick max check without full minMaxLoc
-            val minMaxLoc = Core.minMaxLoc(pythonHeatmap!!)
-            lastMaxHeat = minMaxLoc.maxVal
-            
-            if (lastMaxHeat > 0.001) { // Lower threshold for better responsiveness
-                // OPTIMIZED: Reuse normalized matrix if possible
-                val normalizedHeatmap = Mat()
-                Core.normalize(pythonHeatmap!!, normalizedHeatmap, 0.0, 255.0, Core.NORM_MINMAX)
-                normalizedHeatmap.convertTo(normalizedHeatmap, CvType.CV_8U)
-                
-                // FAST: Apply green colormap
-                val coloredHeatmap = Mat()
-                Imgproc.applyColorMap(normalizedHeatmap, coloredHeatmap, Imgproc.COLORMAP_SUMMER)
-                
-                // OPTIMIZED: Recycle old bitmap before creating new one
-                cachedHeatmapBitmap?.recycle()
-                
-                // FAST: Create pre-scaled bitmap
-                val targetWidth = (contrastFrameWidth * uniformScaleFactor).toInt()
-                val targetHeight = (contrastFrameHeight * uniformScaleFactor).toInt()
-                
-                val tempBitmap = Bitmap.createBitmap(
-                    coloredHeatmap.cols(), 
-                    coloredHeatmap.rows(), 
-                    Bitmap.Config.RGB_565 // Faster than ARGB_8888
-                )
-                Utils.matToBitmap(coloredHeatmap, tempBitmap)
-                
-                // FAST: Scale once and cache
-                cachedHeatmapBitmap = Bitmap.createScaledBitmap(
-                    tempBitmap,
-                    targetWidth,
-                    targetHeight,
-                    false // No filtering for speed
-                )
-                
-                // FAST CLEANUP
-                normalizedHeatmap.release()
-                coloredHeatmap.release()
-                tempBitmap.recycle()
-            }
-        } catch (e: Exception) {
-            Log.e("OverlayView", "Error updating cached heatmap: ${e.message}")
-        }
+        canvas.drawText("Face Heat Points: ${faceHeatPoints.size}", 20f, 700f, statusPaint)
+        canvas.drawText("Ultra-Fast Mode", 20f, 730f, statusPaint)
     }
 
     private fun performPythonStyleDetection(currentMat: Mat) {
