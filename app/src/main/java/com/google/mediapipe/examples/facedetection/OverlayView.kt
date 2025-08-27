@@ -925,6 +925,7 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         } finally {
             lock.unlock()
         }
+        */
     }
     
     // Process contrast detection for current frame
