@@ -10,6 +10,7 @@ import com.google.mediapipe.tasks.vision.facedetector.FaceDetectorResult
 import kotlinx.coroutines.*
 import org.opencv.android.Utils
 import org.opencv.core.Core
+import org.opencv.core.CvType
 import org.opencv.core.Mat
 import org.opencv.core.MatOfDouble
 import org.opencv.core.MatOfPoint
@@ -68,6 +69,15 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
     private val heatmapDecayOutside = 0.1f // 90% decay outside face area (like Python)
     private val heatIntensity = 0.4f // Heat intensity for new detections (like Python)
     private var pythonCurrentObjects = mutableListOf<FaceRect>() // Current detected objects
+    
+    // OLD PIXEL SYSTEM VARIABLES (Deprecated - keeping for compatibility)
+    private var pixelContrastMap = FloatArray(0)
+    private var pixelDecayTimestamps = LongArray(0)
+    private val maxPixelIntensity = 1.0f
+    private val pixelDecayRate = 0.98f
+    private val pixelBoostAmount = 0.4f
+    private val minVisibleIntensity = 0.15f
+    private val timeBasedDecayRate = 50L
     
     // Enhanced contrast processing
     private var clahe: Any? = null
@@ -538,58 +548,7 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         }
     }
 
-    private fun drawPythonHeatmapOverlay(canvas: Canvas) {
-        // Draw heatmap for each face region
-        for (faceRegion in lastFaceRegions) {
-            val faceKey = FaceRect(
-                faceRegion.left.toInt(),
-                faceRegion.top.toInt(),
-                faceRegion.right.toInt(),
-                faceRegion.bottom.toInt()
-            )
-            
-            val heatmap = heatmapData[faceKey]
-            if (heatmap != null && heatmap.isNotEmpty()) {
-                val maxHeat = heatmap.maxOrNull() ?: 0f
-                if (maxHeat > 0.01f) {
-                    // Draw heatmap with red color gradient
-                    drawRedHeatmapOverlay(canvas, faceKey, heatmap)
-                    
-                    // Debug: Show heatmap status
-                    val debugPaint = Paint().apply {
-                        color = Color.WHITE
-                        textSize = 24f
-                        isAntiAlias = true
-                        isFakeBoldText = true
-                        setShadowLayer(2f, 1f, 1f, Color.BLACK)
-                    }
-                    canvas.drawText(
-                        "HEATMAP: ${String.format("%.2f", maxHeat)}", 
-                        20f, 580f, 
-                        debugPaint
-                    )
-                } else {
-                    // Show low heat debug
-                    val debugPaint = Paint().apply {
-                        color = Color.YELLOW
-                        textSize = 20f
-                        isAntiAlias = true
-                        setShadowLayer(1f, 1f, 1f, Color.BLACK)
-                    }
-                    canvas.drawText("HEAT TOO LOW: ${String.format("%.4f", maxHeat)}", 20f, 580f, debugPaint)
-                }
-            } else {
-                // Show no heatmap debug
-                val debugPaint = Paint().apply {
-                    color = Color.RED
-                    textSize = 20f
-                    isAntiAlias = true
-                    setShadowLayer(1f, 1f, 1f, Color.BLACK)
-                }
-                canvas.drawText("NO HEATMAP DATA", 20f, 580f, debugPaint)
-            }
-        }
-    }
+    // OLD FUNCTION REMOVED - Using new Python-style heatmap implementation
     
     private fun drawRedHeatmapOverlay(canvas: Canvas, faceKey: FaceRect, heatmap: FloatArray) {
         // Get the actual camera frame dimensions for mapping
@@ -1063,120 +1022,11 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         // PYTHON LOGIC: Use MediaPipe face as main detection, find contours inside face area
         performPythonContrastDetection(currentMat, mediaPipeFace)
         
-        val faceX = max(0, facePosition.left.toInt())
-        val faceY = max(0, facePosition.top.toInt())
-        val faceW = min(currentMat.cols() - faceX, (facePosition.right - facePosition.left).toInt())
-        val faceH = min(currentMat.rows() - faceY, (facePosition.bottom - facePosition.top).toInt())
+        // Initialize and update Python-style heatmap
+        initializePythonHeatmap(currentMat.cols(), currentMat.rows())
+        updatePythonHeatmap(currentMat, mediaPipeFace)
         
-        if (faceW <= 0 || faceH <= 0) return
-        
-        // Extract face region for contrast processing
-        val faceRegion = Mat(currentMat, org.opencv.core.Rect(faceX, faceY, faceW, faceH))
-        
-        // Convert to grayscale for contrast detection
-        val grayFace = Mat()
-        Imgproc.cvtColor(faceRegion, grayFace, Imgproc.COLOR_RGB2GRAY)
-        
-        // DYNAMIC CONTRAST: Apply maximum contrast enhancement
-        val enhancedFace = enhanceContrastForDetection(grayFace)
-        
-        // Calculate dynamic threshold based on image statistics
-        val dynamicThreshold = calculateDynamicThreshold(enhancedFace)
-        
-        // Apply frame differencing if previous frame available
-        var diffMat: Mat? = null
-        var useFrameDiff = false
-        if (previousFrame != null) {
-            // Resize previous frame to match current face region
-            val prevFaceRegion = Mat()
-            Imgproc.resize(previousFrame!!, prevFaceRegion, Size(faceW.toDouble(), faceH.toDouble()))
-            
-            // Calculate absolute difference
-            diffMat = Mat()
-            Core.absdiff(enhancedFace, prevFaceRegion, diffMat)
-            
-            // Check if there's enough difference to use frame differencing
-            val diffMean = Core.mean(diffMat)
-            val meanDiffValue = diffMean.`val`[0]
-            
-            if (meanDiffValue > 5.0) { // Only use frame diff if there's enough motion
-                useFrameDiff = true
-                Log.d("OverlayView", "Using frame differencing: mean diff = ${String.format("%.1f", meanDiffValue)}")
-            } else {
-                Log.d("OverlayView", "Low motion detected, using contrast enhancement instead")
-            }
-            
-            prevFaceRegion.release()
-        }
-        
-        // FACE-INSIDE DETECTION: Use inverted thresholding to detect features INSIDE face
-        val thresholdMat = Mat()
-        if (useFrameDiff && diffMat != null) {
-            // Motion detection - keep areas that changed (normal threshold)
-            val motionThreshold = max(10.0, dynamicThreshold * 0.3)
-            Imgproc.threshold(diffMat, thresholdMat, motionThreshold, 255.0, Imgproc.THRESH_BINARY)
-            Log.d("OverlayView", "Applied motion threshold: ${String.format("%.1f", motionThreshold)}")
-        } else {
-            // REVERSED DETECTION: Use THRESH_BINARY_INV to detect DARK features (eyes, nose, mouth) inside face
-            val faceFeatureThreshold = max(80.0, dynamicThreshold * 0.8) // Higher threshold for face features
-            Imgproc.threshold(enhancedFace, thresholdMat, faceFeatureThreshold, 255.0, Imgproc.THRESH_BINARY_INV)
-            Log.d("OverlayView", "Applied INVERTED face feature threshold: ${String.format("%.1f", faceFeatureThreshold)}")
-        }
-        
-        // Apply morphological operations to clean up
-        val kernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, Size(3.0, 3.0))
-        val cleanMat = Mat()
-        Imgproc.morphologyEx(thresholdMat, cleanMat, Imgproc.MORPH_OPEN, kernel)
-        
-        // Initialize pixel contrast system for this frame
-        initializePixelContrastSystem(currentMat.cols(), currentMat.rows())
-        
-        // Find contours (including half/open contours)
-        val contours = mutableListOf<MatOfPoint>()
-        val hierarchy = Mat()
-        Imgproc.findContours(cleanMat, contours, hierarchy, Imgproc.RETR_LIST, Imgproc.CHAIN_APPROX_NONE)
-        
-        Log.d("OverlayView", "Face region: ${faceX},${faceY},${faceW},${faceH}")
-        Log.d("OverlayView", "Dynamic threshold: ${String.format("%.1f", dynamicThreshold)}")
-        Log.d("OverlayView", "Found ${contours.size} contrast contours")
-        
-        // UPDATE PIXEL CONTRAST: Convert contours to pixel intensity map
-        updatePixelContrastFromContours(contours, faceX, faceY, faceW, faceH)
-        
-        // FAST PROCESSING: Skip object creation, go directly to pixel processing
-        Log.d("OverlayView", "Found ${contours.size} face feature contours - processing pixels directly")
-        
-        // Create contrast bitmap for display
-        val contrastBitmap = createContrastBitmap(cleanMat)
-        if (contrastBitmap != null) {
-            val faceKey = FaceRect(faceX, faceY, faceX + faceW, faceY + faceH)
-            
-            // Scale the contrast bitmap to match the face display size
-            val scaledContrastBitmap = scaleContrastBitmap(contrastBitmap, faceW, faceH)
-            if (scaledContrastBitmap != null) {
-                contrastBitmaps[faceKey] = scaledContrastBitmap
-                Log.d("OverlayView", "Created contrast bitmap: ${scaledContrastBitmap.width}x${scaledContrastBitmap.height}")
-            }
-            
-            contrastBitmap.recycle()
-        }
-        
-        // Store current enhanced frame as previous for next iteration
-        previousFrame?.release()
-        previousFrame = enhancedFace.clone()
-        
-        // Clean up
-        contours.forEach { it.release() }
-        hierarchy.release()
-        faceRegion.release()
-        grayFace.release()
-        enhancedFace.release()
-        diffMat?.release()
-        thresholdMat.release()
-        kernel.release()
-        cleanMat.release()
-        
-        Log.d("OverlayView", "Live contrast detection complete: ${currentObjects.size} objects found")
+        Log.d("OverlayView", "Python-style contrast detection complete")
     }
     
     private fun performPythonContrastDetection(currentMat: Mat, mediaPipeFace: RectF) {
@@ -1660,21 +1510,11 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         kernel.release()
     }
 
-    private fun initializePixelContrastSystem(width: Int, height: Int) {
-        if (contrastFrameWidth != width || contrastFrameHeight != height) {
-            contrastFrameWidth = width
-            contrastFrameHeight = height
-            val totalPixels = width * height
-            
-            pixelContrastMap = FloatArray(totalPixels) { 0f }
-            pixelDecayTimestamps = LongArray(totalPixels) { System.currentTimeMillis() }
-            
-            Log.d("OverlayView", "Initialized pixel contrast system: ${width}x${height} = ${totalPixels} pixels")
-        }
-    }
+    // OLD PIXEL SYSTEM REMOVED - Using Python-style heatmap now
     
     private fun updatePixelContrastFromContours(contours: List<MatOfPoint>, faceX: Int, faceY: Int, faceW: Int, faceH: Int) {
-        if (pixelContrastMap.isEmpty()) return
+        // OLD PIXEL SYSTEM - FUNCTION DISABLED
+        return
         
         val currentTime = System.currentTimeMillis()
         val faceStartIndex = 0 // We'll work within the full frame
@@ -1748,9 +1588,8 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
     }
     
     private fun drawPixelContrast(canvas: Canvas) {
-        if (pixelContrastMap.isEmpty() || contrastFrameWidth <= 0 || contrastFrameHeight <= 0) {
-            return
-        }
+        // OLD PIXEL SYSTEM - FUNCTION DISABLED
+        return
         
         val paint = Paint().apply {
             style = Paint.Style.FILL
