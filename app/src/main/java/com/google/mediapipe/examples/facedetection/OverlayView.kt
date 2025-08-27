@@ -236,11 +236,29 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
                     
                     // Draw contrast detection result instead of grayscale
                     val contrastBitmap = contrastBitmaps[rectKey]
-                    contrastBitmap?.let {
+                    if (contrastBitmap != null) {
                         // Draw contrast bitmap (live contrast detection)
                         val bitmapPaint = Paint()
                         bitmapPaint.alpha = 180 // More visible contrast
-                        canvas.drawBitmap(it, scaledLeft, scaledTop, bitmapPaint)
+                        canvas.drawBitmap(contrastBitmap, scaledLeft, scaledTop, bitmapPaint)
+                        Log.d("OverlayView", "Drawing contrast bitmap at ${scaledLeft},${scaledTop}")
+                    } else {
+                        Log.d("OverlayView", "No contrast bitmap found for rectKey: $rectKey")
+                        
+                        // Draw a debug rectangle to show where contrast should be
+                        val debugPaint = Paint().apply {
+                            color = Color.GREEN
+                            style = Paint.Style.STROKE
+                            strokeWidth = 3f
+                        }
+                        canvas.drawRect(scaledLeft, scaledTop, scaledRight, scaledBottom, debugPaint)
+                        
+                        val debugTextPaint = Paint().apply {
+                            color = Color.GREEN
+                            textSize = 20f
+                            isAntiAlias = true
+                        }
+                        canvas.drawText("NO CONTRAST", scaledLeft + 5, scaledTop + 25, debugTextPaint)
                     }
                     
                     // Draw heatmap on top for visibility
@@ -516,6 +534,7 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         canvas.drawText("LIVE CONTRAST DETECTION", 20f, 520f, perfPaint)
         canvas.drawText("Dynamic Threshold: ${String.format("%.1f", dynamicContrastThreshold)}", 20f, 550f, perfPaint)
         canvas.drawText("Contrast Objects: ${currentObjects.size}", 20f, 580f, perfPaint)
+        canvas.drawText("Contrast Bitmaps: ${contrastBitmaps.size}", 20f, 610f, perfPaint)
         
         // CONTRAST HEATMAP: Draw the heatmap overlay
         drawContrastHeatmapOverlay(canvas)
@@ -819,6 +838,11 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
     }
 
     private suspend fun processFacesInBackground() {
+        // DISABLED: No more grayscale processing - contrast detection handles display
+        Log.d("OverlayView", "Background processing disabled - using live contrast detection")
+        return
+        
+        /*
         lock.lock()
         try {
             val currentResults = results
@@ -1153,7 +1177,15 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         val contrastBitmap = createContrastBitmap(cleanMat)
         if (contrastBitmap != null) {
             val faceKey = FaceRect(faceX, faceY, faceX + faceW, faceY + faceH)
-            contrastBitmaps[faceKey] = contrastBitmap
+            
+            // Scale the contrast bitmap to match the face display size
+            val scaledContrastBitmap = scaleContrastBitmap(contrastBitmap, faceW, faceH)
+            if (scaledContrastBitmap != null) {
+                contrastBitmaps[faceKey] = scaledContrastBitmap
+                Log.d("OverlayView", "Created contrast bitmap: ${scaledContrastBitmap.width}x${scaledContrastBitmap.height}")
+            }
+            
+            contrastBitmap.recycle()
         }
         
         // Store current enhanced frame as previous for next iteration
@@ -1560,11 +1592,30 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
     
     private fun createContrastBitmap(contrastMat: Mat): Bitmap? {
         return try {
-            val bitmap = Bitmap.createBitmap(contrastMat.cols(), contrastMat.rows(), Bitmap.Config.ARGB_8888)
-            Utils.matToBitmap(contrastMat, bitmap)
+            // Convert to RGB for better display
+            val rgbMat = Mat()
+            Imgproc.cvtColor(contrastMat, rgbMat, Imgproc.COLOR_GRAY2RGB)
+            
+            val bitmap = Bitmap.createBitmap(rgbMat.cols(), rgbMat.rows(), Bitmap.Config.ARGB_8888)
+            Utils.matToBitmap(rgbMat, bitmap)
+            
+            rgbMat.release()
+            Log.d("OverlayView", "Created contrast bitmap: ${bitmap.width}x${bitmap.height}")
             bitmap
         } catch (e: Exception) {
             Log.e("OverlayView", "Error creating contrast bitmap: ${e.message}")
+            null
+        }
+    }
+    
+    private fun scaleContrastBitmap(bitmap: Bitmap, targetWidth: Int, targetHeight: Int): Bitmap? {
+        return try {
+            // Scale to match the face region size for proper display
+            val scaledBitmap = Bitmap.createScaledBitmap(bitmap, targetWidth, targetHeight, true)
+            Log.d("OverlayView", "Scaled contrast bitmap: ${bitmap.width}x${bitmap.height} -> ${scaledBitmap.width}x${scaledBitmap.height}")
+            scaledBitmap
+        } catch (e: Exception) {
+            Log.e("OverlayView", "Error scaling contrast bitmap: ${e.message}")
             null
         }
     }
