@@ -314,7 +314,64 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
     }
     
     private fun drawPythonStyleResults(canvas: Canvas) {
-        // Draw all detected objects (gray rectangles like Python)
+        // Draw MediaPipe face position (blue like Python Haar cascade)
+        for (faceRegion in lastFaceRegions) {
+            val faceRect = RectF(
+                (faceRegion.left * uniformScaleFactor) + xOffset,
+                (faceRegion.top * uniformScaleFactor) + yOffset,
+                (faceRegion.right * uniformScaleFactor) + xOffset,
+                (faceRegion.bottom * uniformScaleFactor) + yOffset
+            )
+            
+            val mediaPipePaint = Paint().apply {
+                color = Color.BLUE
+                style = Paint.Style.STROKE
+                strokeWidth = 3f
+            }
+            canvas.drawRect(faceRect, mediaPipePaint)
+            
+            val mediaPipeText = Paint().apply {
+                color = Color.BLUE
+                textSize = 24f
+                isAntiAlias = true
+                isFakeBoldText = true
+            }
+            canvas.drawText(
+                "MediaPipe Face",
+                faceRect.left,
+                faceRect.top - 15,
+                mediaPipeText
+            )
+            
+            // Draw search area around MediaPipe face (yellow like Python)
+            val searchMargin = 50f * uniformScaleFactor
+            val searchPaint = Paint().apply {
+                color = Color.YELLOW
+                style = Paint.Style.STROKE
+                strokeWidth = 1f
+            }
+            canvas.drawRect(
+                faceRect.left - searchMargin,
+                faceRect.top - searchMargin,
+                faceRect.right + searchMargin,
+                faceRect.bottom + searchMargin,
+                searchPaint
+            )
+            
+            val searchText = Paint().apply {
+                color = Color.YELLOW
+                textSize = 16f
+                isAntiAlias = true
+            }
+            canvas.drawText(
+                "Search Area",
+                faceRect.left - searchMargin,
+                faceRect.top - searchMargin - 5,
+                searchText
+            )
+        }
+        
+        // Draw detected objects (gray rectangles like Python)
         for (obj in currentObjects) {
             val objRect = RectF(
                 (obj.left * uniformScaleFactor) + xOffset,
@@ -341,6 +398,56 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
                 objRect.top - 10,
                 objText
             )
+            
+            // Draw distance line to MediaPipe face if available (like Python)
+            if (lastFaceRegions.isNotEmpty()) {
+                val mediaypipeFace = lastFaceRegions.first()
+                val faceRect = RectF(
+                    (mediaypipeFace.left * uniformScaleFactor) + xOffset,
+                    (mediaypipeFace.top * uniformScaleFactor) + yOffset,
+                    (mediaypipeFace.right * uniformScaleFactor) + xOffset,
+                    (mediaypipeFace.bottom * uniformScaleFactor) + yOffset
+                )
+                
+                val faceCenterX = faceRect.left + (faceRect.right - faceRect.left) / 2
+                val faceCenterY = faceRect.top + (faceRect.bottom - faceRect.top) / 2
+                val objCenterX = objRect.left + (objRect.right - objRect.left) / 2
+                val objCenterY = objRect.top + (objRect.bottom - objRect.top) / 2
+                
+                val distance = kotlin.math.sqrt(
+                    ((faceCenterX - objCenterX) * (faceCenterX - objCenterX) + 
+                     (faceCenterY - objCenterY) * (faceCenterY - objCenterY)).toDouble()
+                ).toFloat() / uniformScaleFactor // Convert back to original scale
+                
+                // Color code the line based on distance (Python logic)
+                val lineColor = when {
+                    distance < 10f -> Color.GREEN     // Very close - max speed
+                    distance < 25f -> Color.CYAN      // Close - high speed  
+                    distance < 50f -> Color.YELLOW    // Medium - medium speed
+                    distance < 80f -> Color.rgb(255, 165, 0) // Orange - slow speed
+                    distance < 120f -> Color.rgb(255, 100, 0) // Dark orange - very slow
+                    else -> Color.RED                 // Red - minimal speed
+                }
+                
+                val linePaint = Paint().apply {
+                    color = lineColor
+                    strokeWidth = 3f
+                }
+                canvas.drawLine(faceCenterX, faceCenterY, objCenterX, objCenterY, linePaint)
+                
+                val distanceText = Paint().apply {
+                    color = lineColor
+                    textSize = 18f
+                    isAntiAlias = true
+                    isFakeBoldText = true
+                }
+                canvas.drawText(
+                    "${distance.toInt()}px",
+                    (faceCenterX + objCenterX) / 2,
+                    (faceCenterY + objCenterY) / 2,
+                    distanceText
+                )
+            }
         }
         
         // Draw the consistent face (green with "FACE" label like Python)
@@ -773,86 +880,131 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
     }
     
     private fun performPythonStyleDetection(currentMat: Mat) {
-        // EXACT PYTHON REPLICATION: HSV skin tone detection within MediaPipe face area
-        for (faceRegion in lastFaceRegions) {
-            val faceX = max(0, faceRegion.left.toInt())
-            val faceY = max(0, faceRegion.top.toInt())
-            val faceW = min(currentMat.cols() - faceX, (faceRegion.right - faceRegion.left).toInt())
-            val faceH = min(currentMat.rows() - faceY, (faceRegion.bottom - faceRegion.top).toInt())
+        // EXACT PYTHON REPLICATION: Use MediaPipe as main detection, then find closest contour with similar size
+        currentObjects.clear()
+        
+        if (lastFaceRegions.isEmpty()) {
+            // Python: If no MediaPipe face, use a simple fallback (much faster)
+            // Just use a default face area in the center of the frame
+            val centerX = currentMat.cols() / 2 - 100
+            val centerY = currentMat.rows() / 2 - 100
+            val defaultW = 200
+            val defaultH = 200
             
-            // Python: Define dynamic search area: MediaPipe face + 5 pixel padding
-            val searchPadding = 5
-            val searchX = max(0, faceX - searchPadding)
-            val searchY = max(0, faceY - searchPadding)
-            val searchW = min(currentMat.cols() - searchX, faceW + 2 * searchPadding)
-            val searchH = min(currentMat.rows() - searchY, faceH + 2 * searchPadding)
+            // Ensure the default face area is within frame bounds
+            val fallbackX = max(0, min(centerX, currentMat.cols() - defaultW))
+            val fallbackY = max(0, min(centerY, currentMat.rows() - defaultH))
             
-            if (searchW > 0 && searchH > 0) {
-                // Extract search region (much smaller area for speed)
-                val searchRegion = Mat(currentMat, org.opencv.core.Rect(searchX, searchY, searchW, searchH))
-                
-                // Python: Convert to HSV for skin tone detection
-                val hsvRegion = Mat()
-                Imgproc.cvtColor(searchRegion, hsvRegion, Imgproc.COLOR_RGB2HSV)
-                
-                // Python: Optimized skin tone range for face detection
-                val lowerSkin = Scalar(0.0, 30.0, 60.0)
-                val upperSkin = Scalar(20.0, 255.0, 255.0)
-                
-                // Create a mask for skin tone
-                val mask = Mat()
-                Core.inRange(hsvRegion, lowerSkin, upperSkin, mask)
-                
-                // Python: Fast morphological operations
-                val kernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, Size(3.0, 3.0))
-                val erodedMask = Mat()
-                val dilatedMask = Mat()
-                Imgproc.erode(mask, erodedMask, kernel, Point(-1.0, -1.0), 1)
-                Imgproc.dilate(erodedMask, dilatedMask, kernel, Point(-1.0, -1.0), 1)
-                
-                // Find contours in the mask
-                val contours = mutableListOf<MatOfPoint>()
-                val hierarchy = Mat()
-                Imgproc.findContours(dilatedMask, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
-                
-                val faceSize = faceW * faceH
-                
-                for (contour in contours) {
-                    // Get bounding rectangle
-                    val boundingRect = Imgproc.boundingRect(contour)
-                    val contourSize = boundingRect.width * boundingRect.height
+            currentObjects.add(FaceRect(fallbackX, fallbackY, fallbackX + defaultW, fallbackY + defaultH))
+            return
+        }
+        
+        // Python: Use MediaPipe face as main detection reference (use first face)
+        val mediaypipeFace = lastFaceRegions.first()
+        val faceX = max(0, mediaypipeFace.left.toInt())
+        val faceY = max(0, mediaypipeFace.top.toInt()) 
+        val faceW = min(currentMat.cols() - faceX, (mediaypipeFace.right - mediaypipeFace.left).toInt())
+        val faceH = min(currentMat.rows() - faceY, (mediaypipeFace.bottom - mediaypipeFace.top).toInt())
+        val faceSize = faceW * faceH
+        val faceCenterX = faceX + faceW / 2
+        val faceCenterY = faceY + faceH / 2
+        
+        // Python: Define dynamic search area: MediaPipe face + 5 pixel padding  
+        val searchPadding = 5
+        val searchX = max(0, faceX - searchPadding)
+        val searchY = max(0, faceY - searchPadding)
+        val searchW = min(currentMat.cols() - searchX, faceW + 2 * searchPadding)
+        val searchH = min(currentMat.rows() - searchY, faceH + 2 * searchPadding)
+        
+        if (searchW <= 0 || searchH <= 0) return
+        
+        // Extract search region (much smaller area for speed)
+        val searchRegion = Mat(currentMat, org.opencv.core.Rect(searchX, searchY, searchW, searchH))
+        
+        // Python: Convert to HSV for skin tone detection
+        val hsvRegion = Mat()
+        Imgproc.cvtColor(searchRegion, hsvRegion, Imgproc.COLOR_RGB2HSV)
+        
+        // Python: Optimized skin tone range for face detection
+        val lowerSkin = Scalar(0.0, 30.0, 60.0)
+        val upperSkin = Scalar(20.0, 255.0, 255.0)
+        
+        // Create a mask for skin tone
+        val mask = Mat()
+        Core.inRange(hsvRegion, lowerSkin, upperSkin, mask)
+        
+        // Python: Fast morphological operations
+        val kernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, Size(3.0, 3.0))
+        val erodedMask = Mat()
+        val dilatedMask = Mat()
+        Imgproc.erode(mask, erodedMask, kernel, Point(-1.0, -1.0), 1)
+        Imgproc.dilate(erodedMask, dilatedMask, kernel, Point(-1.0, -1.0), 1)
+        
+        // Find contours in the mask
+        val contours = mutableListOf<MatOfPoint>()
+        val hierarchy = Mat()
+        Imgproc.findContours(dilatedMask, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
+        
+        // PYTHON LOGIC: Find the closest contour with similar size to MediaPipe face
+        val potentialObjects = mutableListOf<Pair<FaceRect, Double>>() // <object, score>
+        
+        for (contour in contours) {
+            // Get bounding rectangle
+            val boundingRect = Imgproc.boundingRect(contour)
+            val contourSize = boundingRect.width * boundingRect.height
+            
+            // Python: Filter by reasonable size (similar to MediaPipe face)
+            val sizeRatio = contourSize.toFloat() / faceSize.toFloat()
+            if (sizeRatio in 0.3f..3.0f) {  // Allow contours 30% to 300% of MediaPipe size
+                // Python: Filter for face-like aspect ratios
+                val aspectRatio = boundingRect.width.toFloat() / boundingRect.height.toFloat()
+                if (aspectRatio in 0.5f..2.0f) {
+                    // Convert coordinates back to full frame
+                    val fullX = searchX + boundingRect.x
+                    val fullY = searchY + boundingRect.y
+                    val fullW = boundingRect.width
+                    val fullH = boundingRect.height
                     
-                    // Python: Filter by reasonable size (similar to MediaPipe face)
-                    val sizeRatio = contourSize.toFloat() / faceSize.toFloat()
-                    if (sizeRatio in 0.3f..3.0f) {  // Allow contours 30% to 300% of face size
-                        // Python: Filter for face-like aspect ratios
-                        val aspectRatio = boundingRect.width.toFloat() / boundingRect.height.toFloat()
-                        if (aspectRatio in 0.5f..2.0f) {
-                            // Convert coordinates back to full frame
-                            val fullX = searchX + boundingRect.x
-                            val fullY = searchY + boundingRect.y
-                            
-                            // Add to current objects
-                            currentObjects.add(FaceRect(
-                                fullX, fullY, 
-                                fullX + boundingRect.width, 
-                                fullY + boundingRect.height
-                            ))
-                        }
-                    }
+                    val objCenterX = fullX + fullW / 2
+                    val objCenterY = fullY + fullH / 2
+                    
+                    // Python: Calculate distance from MediaPipe face center
+                    val distance = kotlin.math.sqrt(
+                        ((faceCenterX - objCenterX) * (faceCenterX - objCenterX) + 
+                         (faceCenterY - objCenterY) * (faceCenterY - objCenterY)).toDouble()
+                    )
+                    
+                    // Python: Calculate size similarity (closer to 1.0 is better)
+                    val sizeSimilarity = kotlin.math.abs(1.0 - sizeRatio)
+                    
+                    // Python: Combined score: distance + size similarity (weighted)
+                    val score = distance + (sizeSimilarity * 50.0)  // Weight size similarity
+                    
+                    potentialObjects.add(Pair(
+                        FaceRect(fullX, fullY, fullX + fullW, fullY + fullH),
+                        score
+                    ))
                 }
-                
-                // Clean up
-                contours.forEach { it.release() }
-                hierarchy.release()
-                searchRegion.release()
-                hsvRegion.release()
-                mask.release()
-                erodedMask.release()
-                dilatedMask.release()
-                kernel.release()
             }
         }
+        
+        // Python: Find the best object (lowest score = closest + most similar size)
+        if (potentialObjects.isNotEmpty()) {
+            val bestObject = potentialObjects.minByOrNull { it.second }?.first
+            if (bestObject != null) {
+                currentObjects.add(bestObject)  // PYTHON: Only ONE object per frame
+            }
+        }
+        
+        // Clean up
+        contours.forEach { it.release() }
+        hierarchy.release()
+        searchRegion.release()
+        hsvRegion.release()
+        mask.release()
+        erodedMask.release()
+        dilatedMask.release()
+        kernel.release()
     }
 
     private fun updatePythonStyleHeatmap(frameShape: Mat) {
