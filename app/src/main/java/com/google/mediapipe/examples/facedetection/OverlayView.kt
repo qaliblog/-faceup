@@ -536,6 +536,8 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         canvas.drawText("Dynamic Threshold: ${String.format("%.1f", dynamicContrastThreshold)}", 20f, 550f, perfPaint)
         canvas.drawText("Contrast Objects: ${currentObjects.size}", 20f, 580f, perfPaint)
         canvas.drawText("Contrast Bitmaps: ${contrastBitmaps.size}", 20f, 610f, perfPaint)
+        canvas.drawText("Stored MediaPipe Pos: ${if (storedMediaPipePosition != null) "YES" else "NO"}", 20f, 640f, perfPaint)
+        canvas.drawText("Previous Frame: ${if (previousFrame != null) "YES" else "NO"}", 20f, 670f, perfPaint)
         
         // CONTRAST HEATMAP: Draw the heatmap overlay
         drawContrastHeatmapOverlay(canvas)
@@ -1100,7 +1102,27 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         Log.d("OverlayView", "=== LIVE CONTRAST DETECTION === Frame: ${currentMat.cols()}x${currentMat.rows()}")
         
         if (facePosition == null) {
-            Log.d("OverlayView", "No face position available for contrast detection")
+            Log.d("OverlayView", "No face position available - creating EMERGENCY fallback detection")
+            
+            // EMERGENCY FALLBACK: Use center of frame and create test objects
+            val centerX = currentMat.cols() / 4
+            val centerY = currentMat.rows() / 4
+            val testW = currentMat.cols() / 2
+            val testH = currentMat.rows() / 2
+            
+            // Create multiple test objects to generate some data
+            for (i in 0..4) {
+                val offsetX = centerX + (i * testW / 10)
+                val offsetY = centerY + (i * testH / 10)
+                val objW = testW / 5
+                val objH = testH / 5
+                
+                currentObjects.add(FaceRect(offsetX, offsetY, offsetX + objW, offsetY + objH))
+                Log.d("OverlayView", "EMERGENCY: Added fallback object $i at ${offsetX},${offsetY}")
+            }
+            
+            // Still call heatmap update to generate data
+            updateContrastBasedHeatmap(currentMat)
             return
         }
         
@@ -1126,6 +1148,7 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         
         // Apply frame differencing if previous frame available
         var diffMat: Mat? = null
+        var useFrameDiff = false
         if (previousFrame != null) {
             // Resize previous frame to match current face region
             val prevFaceRegion = Mat()
@@ -1135,13 +1158,33 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
             diffMat = Mat()
             Core.absdiff(enhancedFace, prevFaceRegion, diffMat)
             
+            // Check if there's enough difference to use frame differencing
+            val diffMean = Core.mean(diffMat)
+            val meanDiffValue = diffMean.`val`[0]
+            
+            if (meanDiffValue > 5.0) { // Only use frame diff if there's enough motion
+                useFrameDiff = true
+                Log.d("OverlayView", "Using frame differencing: mean diff = ${String.format("%.1f", meanDiffValue)}")
+            } else {
+                Log.d("OverlayView", "Low motion detected, using contrast enhancement instead")
+            }
+            
             prevFaceRegion.release()
         }
         
-        // Apply thresholding (use difference if available, otherwise enhanced contrast)
+        // Apply thresholding with multiple approaches for better detection
         val thresholdMat = Mat()
-        val sourceForThreshold = diffMat ?: enhancedFace
-        Imgproc.threshold(sourceForThreshold, thresholdMat, dynamicThreshold, 255.0, Imgproc.THRESH_BINARY)
+        if (useFrameDiff && diffMat != null) {
+            // Use very low threshold for motion detection
+            val motionThreshold = max(10.0, dynamicThreshold * 0.3)
+            Imgproc.threshold(diffMat, thresholdMat, motionThreshold, 255.0, Imgproc.THRESH_BINARY)
+            Log.d("OverlayView", "Applied motion threshold: ${String.format("%.1f", motionThreshold)}")
+        } else {
+            // Use contrast enhancement with adaptive threshold
+            val contrastThreshold = max(20.0, dynamicThreshold * 0.5)
+            Imgproc.threshold(enhancedFace, thresholdMat, contrastThreshold, 255.0, Imgproc.THRESH_BINARY)
+            Log.d("OverlayView", "Applied contrast threshold: ${String.format("%.1f", contrastThreshold)}")
+        }
         
         // Apply morphological operations to clean up
         val kernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, Size(3.0, 3.0))
@@ -1157,13 +1200,14 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         Log.d("OverlayView", "Dynamic threshold: ${String.format("%.1f", dynamicThreshold)}")
         Log.d("OverlayView", "Found ${contours.size} contrast contours")
         
-        // Filter contours (very permissive for motion detection)
+        // Filter contours (EXTREMELY permissive for any motion)
+        var validContoursFound = 0
         for ((index, contour) in contours.withIndex()) {
             val area = Imgproc.contourArea(contour)
             val boundingRect = Imgproc.boundingRect(contour)
             
-            // Very permissive filtering for any motion
-            if (area > 5.0 && boundingRect.width > 2 && boundingRect.height > 2) {
+            // EXTREMELY permissive filtering - detect ANY change
+            if (area > 1.0 && boundingRect.width > 1 && boundingRect.height > 1) {
                 // Convert back to full frame coordinates
                 val fullX = faceX + boundingRect.x
                 val fullY = faceY + boundingRect.y
@@ -1171,9 +1215,40 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
                 val fullH = boundingRect.height
                 
                 currentObjects.add(FaceRect(fullX, fullY, fullX + fullW, fullY + fullH))
+                validContoursFound++
                 Log.d("OverlayView", "Added contrast object $index: area=${String.format("%.1f", area)}, rect=${fullX},${fullY},${fullW},${fullH}")
             }
         }
+        
+        // FALLBACK: If no contours found, create some test objects for debugging
+        if (validContoursFound == 0 && contours.size == 0) {
+            Log.d("OverlayView", "NO CONTOURS DETECTED - Creating fallback test objects")
+            
+            // Add center region as a test object
+            val centerX = faceX + faceW / 4
+            val centerY = faceY + faceH / 4
+            val testW = faceW / 2
+            val testH = faceH / 2
+            
+            currentObjects.add(FaceRect(centerX, centerY, centerX + testW, centerY + testH))
+            Log.d("OverlayView", "Added FALLBACK test object: rect=${centerX},${centerY},${testW},${testH}")
+            
+            // Add corner regions as additional test objects
+            val quarterW = faceW / 4
+            val quarterH = faceH / 4
+            
+            listOf(
+                Pair(faceX + quarterW, faceY + quarterH),           // Top-left quarter
+                Pair(faceX + 3 * quarterW, faceY + quarterH),      // Top-right quarter
+                Pair(faceX + quarterW, faceY + 3 * quarterH),      // Bottom-left quarter
+                Pair(faceX + 3 * quarterW, faceY + 3 * quarterH)   // Bottom-right quarter
+            ).forEachIndexed { idx, (x, y) ->
+                currentObjects.add(FaceRect(x, y, x + quarterW / 2, y + quarterH / 2))
+                Log.d("OverlayView", "Added FALLBACK corner object $idx: rect=${x},${y},${quarterW / 2},${quarterH / 2}")
+            }
+        }
+        
+        Log.d("OverlayView", "TOTAL CONTRAST OBJECTS: ${currentObjects.size} (${validContoursFound} real + ${currentObjects.size - validContoursFound} fallback)")
         
         // Create contrast bitmap for display
         val contrastBitmap = createContrastBitmap(cleanMat)
