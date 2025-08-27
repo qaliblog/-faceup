@@ -11,6 +11,7 @@ import kotlinx.coroutines.*
 import org.opencv.android.Utils
 import org.opencv.core.Core
 import org.opencv.core.Mat
+import org.opencv.core.MatOfDouble
 import org.opencv.core.MatOfPoint
 import org.opencv.core.MatOfRect
 import org.opencv.core.Point
@@ -1562,12 +1563,14 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
     
     private fun calculateDynamicThreshold(enhancedMat: Mat): Double {
         // Calculate image statistics for dynamic thresholding
-        val mean = Scalar(0.0)
-        val stddev = Scalar(0.0)
+        val mean = MatOfDouble()
+        val stddev = MatOfDouble()
         Core.meanStdDev(enhancedMat, mean, stddev)
         
-        val meanValue = mean.`val`[0]
-        val stdValue = stddev.`val`[0]
+        val meanArray = mean.toArray()
+        val stdArray = stddev.toArray()
+        val meanValue = if (meanArray.isNotEmpty()) meanArray[0] else 0.0
+        val stdValue = if (stdArray.isNotEmpty()) stdArray[0] else 0.0
         
         // Adaptive threshold based on image statistics
         var threshold = meanValue + (stdValue * 0.5) // Base threshold
