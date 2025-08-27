@@ -479,13 +479,13 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
             isAntiAlias = true
             setShadowLayer(1f, 1f, 1f, Color.BLACK)
         }
-        canvas.drawText("OPTIMIZED CONTRAST DETECTION", 20f, 520f, perfPaint)
+        canvas.drawText("FULL FACE MARKING SYSTEM", 20f, 520f, perfPaint)
         canvas.drawText("MediaPipe Interval: 0.2s", 20f, 550f, perfPaint)
-        canvas.drawText("Search Area Only - Max FPS", 20f, 580f, perfPaint)
+        canvas.drawText("Green Face Overlay - Max FPS", 20f, 580f, perfPaint)
         
-        // Show contrast-based object count
-        val contrastObjectCount = pythonCurrentObjects.size
-        canvas.drawText("Contrast Objects: ${contrastObjectCount}", 20f, 610f, perfPaint)
+        // Show face area count
+        val faceAreaCount = detectedFaceAreas.size
+        canvas.drawText("Face Areas: ${faceAreaCount}", 20f, 610f, perfPaint)
         canvas.drawText("Stored MediaPipe Pos: ${if (storedMediaPipePosition != null) "YES" else "NO"}", 20f, 640f, perfPaint)
         canvas.drawText("Heatmap Active: ${if (pythonHeatmap != null) "YES" else "NO"}", 20f, 670f, perfPaint)
         
@@ -1022,11 +1022,11 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         // PYTHON LOGIC: Use MediaPipe face as main detection, find contours inside face area
         performPythonContrastDetection(currentMat, mediaPipeFace)
         
-        // Initialize and update Python-style heatmap
+        // FAST: Always ensure MediaPipe face is shown, then add contrast detection
         initializePythonHeatmap(currentMat.cols(), currentMat.rows())
         updatePythonHeatmap(currentMat, mediaPipeFace)
         
-        Log.d("OverlayView", "Python-style contrast detection complete")
+        Log.d("OverlayView", "FAST: Face detection complete - MediaPipe face always shown")
     }
     
     private fun performPythonContrastDetection(currentMat: Mat, mediaPipeFace: RectF) {
@@ -1185,74 +1185,83 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
     }
     
     private fun updatePythonHeatmap(frameShape: Mat, mediaPipeFace: RectF?) {
-        // ULTRA-FAST: No matrix operations, just update point list
+        // ULTRA-FAST: Update face areas list instead of points
         
-        // FAST DECAY: Age existing points
-        for (i in heatIntensities.indices) {
-            heatIntensities[i] *= 0.95f // Simple decay
+        // FAST DECAY: Age existing face intensities
+        for (i in faceIntensities.indices) {
+            faceIntensities[i] *= 0.90f // Decay face intensity
         }
         
-        // FAST CLEANUP: Remove weak points
-        val threshold = 0.1f
+        // FAST CLEANUP: Remove weak face areas
+        val threshold = 0.15f
         val indicesToRemove = mutableListOf<Int>()
-        for (i in heatIntensities.indices) {
-            if (heatIntensities[i] < threshold) {
+        for (i in faceIntensities.indices) {
+            if (faceIntensities[i] < threshold) {
                 indicesToRemove.add(i)
             }
         }
         
-        // Remove from end to start to maintain indices
+        // Remove weak areas
         for (i in indicesToRemove.reversed()) {
-            if (i < faceHeatPoints.size) faceHeatPoints.removeAt(i)
-            if (i < heatIntensities.size) heatIntensities.removeAt(i)
+            if (i < detectedFaceAreas.size) detectedFaceAreas.removeAt(i)
+            if (i < faceIntensities.size) faceIntensities.removeAt(i)
         }
         
-        // FAST: Add new detection points
-        for (obj in pythonCurrentObjects) {
-            val objCenterX = (obj.left + obj.right) / 2f
-            val objCenterY = (obj.top + obj.bottom) / 2f
+        // ALWAYS SHOW MEDIAPIPE FACE: Add or update MediaPipe detected face
+        if (mediaPipeFace != null) {
+            // Check if we already have this face area
+            var foundExisting = false
+            for (i in detectedFaceAreas.indices) {
+                val existing = detectedFaceAreas[i]
+                // Check if it's close to existing face (within 50 pixels)
+                val distance = kotlin.math.sqrt(
+                    ((existing.centerX() - mediaPipeFace.centerX()) * (existing.centerX() - mediaPipeFace.centerX()) + 
+                     (existing.centerY() - mediaPipeFace.centerY()) * (existing.centerY() - mediaPipeFace.centerY())).toDouble()
+                ).toFloat()
+                
+                if (distance < 50f) {
+                    // Update existing face area
+                    detectedFaceAreas[i] = mediaPipeFace
+                    faceIntensities[i] = 1.0f // Full intensity for MediaPipe face
+                    foundExisting = true
+                    break
+                }
+            }
             
-            // FAST: Add point with intensity
-            faceHeatPoints.add(Pair(objCenterX, objCenterY))
-            heatIntensities.add(0.8f) // High intensity for new detection
-            
-            // LIMIT: Keep only recent points for performance
-            if (faceHeatPoints.size > maxHeatPoints) {
-                faceHeatPoints.removeAt(0)
-                heatIntensities.removeAt(0)
+            if (!foundExisting) {
+                // Add new face area
+                detectedFaceAreas.add(mediaPipeFace)
+                faceIntensities.add(1.0f) // Full intensity for new MediaPipe face
             }
         }
         
-        Log.d("OverlayView", "FAST: Updated ${faceHeatPoints.size} heat points")
-    }
-    
-    // ULTRA-FAST: Direct drawing without matrices
-    private var faceHeatPoints = mutableListOf<Pair<Float, Float>>()
-    private var heatIntensities = mutableListOf<Float>()
-    private val maxHeatPoints = 50 // Limit points for performance
-    
-    private fun drawPythonHeatmapOverlay(canvas: Canvas) {
-        if (faceHeatPoints.isEmpty()) return
-        
-        // ULTRA-FAST: Direct drawing with Paint objects
-        val greenPaint = Paint().apply {
-            style = Paint.Style.FILL
-            alpha = 100 // 30% opacity
+        // LIMIT: Keep only recent face areas for performance
+        while (detectedFaceAreas.size > maxFaceAreas) {
+            detectedFaceAreas.removeAt(0)
+            faceIntensities.removeAt(0)
         }
         
-        // FAST: Draw simple green circles for detected areas
-        for (i in faceHeatPoints.indices) {
-            val point = faceHeatPoints[i]
-            val intensity = if (i < heatIntensities.size) heatIntensities[i] else 0.5f
+        Log.d("OverlayView", "FAST: Updated ${detectedFaceAreas.size} face areas")
+    }
+    
+    // FAST FACE OVERLAY: Simple list of detected face areas
+    private var detectedFaceAreas = mutableListOf<RectF>()
+    private var faceIntensities = mutableListOf<Float>()
+    private val maxFaceAreas = 10 // Limit for performance
+    
+    private fun drawPythonHeatmapOverlay(canvas: Canvas) {
+        if (detectedFaceAreas.isEmpty() && storedMediaPipePosition != null) {
+            // FALLBACK: Draw MediaPipe face with green overlay
+            drawFullFaceOverlay(canvas, storedMediaPipePosition!!, 0.6f)
+            return
+        }
+        
+        // FAST: Draw all detected face areas with green overlay
+        for (i in detectedFaceAreas.indices) {
+            val faceArea = detectedFaceAreas[i]
+            val intensity = if (i < faceIntensities.size) faceIntensities[i] else 0.5f
             
-            // GREEN INTENSITY: Vary green based on detection strength
-            val greenValue = (intensity * 255).toInt().coerceIn(0, 255)
-            greenPaint.color = Color.argb(100, 0, greenValue, 0) // Pure green
-            
-            // FAST: Draw small circles
-            val screenX = point.first * uniformScaleFactor + xOffset
-            val screenY = point.second * uniformScaleFactor + yOffset
-            canvas.drawCircle(screenX, screenY, 8f, greenPaint)
+            drawFullFaceOverlay(canvas, faceArea, intensity)
         }
         
         // SIMPLE STATUS
@@ -1261,8 +1270,35 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
             textSize = 20f
             isAntiAlias = true
         }
-        canvas.drawText("Face Heat Points: ${faceHeatPoints.size}", 20f, 700f, statusPaint)
-        canvas.drawText("Ultra-Fast Mode", 20f, 730f, statusPaint)
+        canvas.drawText("Face Areas: ${detectedFaceAreas.size}", 20f, 700f, statusPaint)
+        canvas.drawText("Full Face Marking", 20f, 730f, statusPaint)
+    }
+    
+    private fun drawFullFaceOverlay(canvas: Canvas, faceRect: RectF, intensity: Float) {
+        // GREEN FACE OVERLAY: Draw full face area with green
+        val greenPaint = Paint().apply {
+            style = Paint.Style.FILL
+            alpha = (intensity * 80).toInt().coerceIn(20, 80) // 20-80 alpha based on intensity
+            color = Color.GREEN
+        }
+        
+        // SCALE: Convert to screen coordinates
+        val scaledLeft = faceRect.left * uniformScaleFactor + xOffset
+        val scaledTop = faceRect.top * uniformScaleFactor + yOffset
+        val scaledRight = faceRect.right * uniformScaleFactor + xOffset
+        val scaledBottom = faceRect.bottom * uniformScaleFactor + yOffset
+        
+        // FAST: Draw filled rectangle for entire face
+        canvas.drawRect(scaledLeft, scaledTop, scaledRight, scaledBottom, greenPaint)
+        
+        // BORDER: Add green border for better visibility
+        val borderPaint = Paint().apply {
+            style = Paint.Style.STROKE
+            strokeWidth = 3f
+            color = Color.GREEN
+            alpha = (intensity * 150).toInt().coerceIn(50, 150)
+        }
+        canvas.drawRect(scaledLeft, scaledTop, scaledRight, scaledBottom, borderPaint)
     }
 
     private fun performPythonStyleDetection(currentMat: Mat) {
