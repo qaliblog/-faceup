@@ -487,7 +487,7 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         val faceAreaCount = detectedFaceAreas.size
         canvas.drawText("Face Areas: ${faceAreaCount}", 20f, 610f, perfPaint)
         canvas.drawText("Stored MediaPipe Pos: ${if (storedMediaPipePosition != null) "YES" else "NO"}", 20f, 640f, perfPaint)
-        canvas.drawText("Heatmap Active: ${if (pythonHeatmap != null) "YES" else "NO"}", 20f, 670f, perfPaint)
+        canvas.drawText("Face Overlay Active: ${if (detectedFaceAreas.isNotEmpty()) "YES" else "NO"}", 20f, 670f, perfPaint)
         
         // CONTRAST HEATMAP: Draw the heatmap overlay
         drawContrastHeatmapOverlay(canvas)
@@ -1175,13 +1175,13 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         contrastFrameWidth = width
         contrastFrameHeight = height
         
-        // FAST: Just ensure point lists are ready
-        if (faceHeatPoints.size > maxHeatPoints) {
-            faceHeatPoints.clear()
-            heatIntensities.clear()
+        // FAST: Just ensure face area lists are ready
+        if (detectedFaceAreas.size > maxFaceAreas) {
+            detectedFaceAreas.clear()
+            faceIntensities.clear()
         }
         
-        Log.d("OverlayView", "FAST: Point-based heatmap ready for ${width}x${height}")
+        Log.d("OverlayView", "FAST: Face area system ready for ${width}x${height}")
     }
     
     private fun updatePythonHeatmap(frameShape: Mat, mediaPipeFace: RectF?) {
