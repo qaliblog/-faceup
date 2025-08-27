@@ -58,6 +58,17 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
     private val maxHeatmapValue = 100f
     private var dynamicContrastThreshold = 30.0
     
+    // PIXEL-BASED CONTRAST SYSTEM
+    private var pixelContrastMap = FloatArray(0) // Pixel intensity array for current frame
+    private var pixelDecayTimestamps = LongArray(0) // Last update time per pixel
+    private var contrastFrameWidth = 0
+    private var contrastFrameHeight = 0
+    private val maxPixelIntensity = 1.0f
+    private val pixelDecayRate = 0.98f // 98% retention per frame (2% decay)
+    private val pixelBoostAmount = 0.4f // Boost when detected again
+    private val minVisibleIntensity = 0.15f // Minimum to be visible
+    private val timeBasedDecayRate = 50L // Decay faster if not updated for 50ms
+    
     // Enhanced contrast processing
     private var clahe: Any? = null
     private var contrastEnhancedFrames = HashMap<FaceRect, Mat>()
@@ -327,7 +338,10 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
                 }
             }
             
-            // PYTHON STYLE DISPLAY: Draw Python-style detection results
+            // PIXEL CONTRAST DISPLAY: Draw pixel-based contrast visualization
+            drawPixelContrast(canvas)
+            
+            // PYTHON STYLE DISPLAY: Draw Python-style detection results  
             drawPythonStyleResults(canvas)
             
         } finally {
@@ -532,10 +546,16 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
             isAntiAlias = true
             setShadowLayer(1f, 1f, 1f, Color.BLACK)
         }
-        canvas.drawText("LIVE CONTRAST DETECTION", 20f, 520f, perfPaint)
+        canvas.drawText("PIXEL-BASED CONTRAST DETECTION", 20f, 520f, perfPaint)
         canvas.drawText("Dynamic Threshold: ${String.format("%.1f", dynamicContrastThreshold)}", 20f, 550f, perfPaint)
-        canvas.drawText("Contrast Objects: ${currentObjects.size}", 20f, 580f, perfPaint)
-        canvas.drawText("Contrast Bitmaps: ${contrastBitmaps.size}", 20f, 610f, perfPaint)
+        canvas.drawText("Pixel Array: ${contrastFrameWidth}x${contrastFrameHeight}", 20f, 580f, perfPaint)
+        
+        // Count visible pixels
+        val visiblePixels = if (pixelContrastMap.isNotEmpty()) {
+            pixelContrastMap.count { it >= minVisibleIntensity }
+        } else 0
+        
+        canvas.drawText("Active Pixels: ${visiblePixels}", 20f, 610f, perfPaint)
         canvas.drawText("Stored MediaPipe Pos: ${if (storedMediaPipePosition != null) "YES" else "NO"}", 20f, 640f, perfPaint)
         canvas.drawText("Previous Frame: ${if (previousFrame != null) "YES" else "NO"}", 20f, 670f, perfPaint)
         
@@ -1121,6 +1141,31 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
                 Log.d("OverlayView", "EMERGENCY: Added fallback object $i at ${offsetX},${offsetY}")
             }
             
+            // EMERGENCY: Initialize pixel system and add some fallback pixel activity
+            initializePixelContrastSystem(currentMat.cols(), currentMat.rows())
+            
+            // Create some emergency pixel activity in center for testing
+            val currentTime = System.currentTimeMillis()
+            val centerX = currentMat.cols() / 2
+            val centerY = currentMat.rows() / 2
+            val radius = minOf(currentMat.cols(), currentMat.rows()) / 6
+            
+            for (i in 0..20) {
+                val angle = (i * 18.0) * Math.PI / 180.0 // Every 18 degrees
+                val x = (centerX + Math.cos(angle) * radius).toInt()
+                val y = (centerY + Math.sin(angle) * radius).toInt()
+                
+                if (x >= 0 && x < contrastFrameWidth && y >= 0 && y < contrastFrameHeight) {
+                    val pixelIndex = y * contrastFrameWidth + x
+                    if (pixelIndex < pixelContrastMap.size) {
+                        pixelContrastMap[pixelIndex] = pixelBoostAmount
+                        pixelDecayTimestamps[pixelIndex] = currentTime
+                    }
+                }
+            }
+            
+            Log.d("OverlayView", "EMERGENCY: Created fallback pixel ring pattern")
+            
             // Still call heatmap update to generate data
             updateContrastBasedHeatmap(currentMat)
             return
@@ -1191,6 +1236,9 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         val cleanMat = Mat()
         Imgproc.morphologyEx(thresholdMat, cleanMat, Imgproc.MORPH_OPEN, kernel)
         
+        // Initialize pixel contrast system for this frame
+        initializePixelContrastSystem(currentMat.cols(), currentMat.rows())
+        
         // Find contours (including half/open contours)
         val contours = mutableListOf<MatOfPoint>()
         val hierarchy = Mat()
@@ -1199,6 +1247,9 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         Log.d("OverlayView", "Face region: ${faceX},${faceY},${faceW},${faceH}")
         Log.d("OverlayView", "Dynamic threshold: ${String.format("%.1f", dynamicThreshold)}")
         Log.d("OverlayView", "Found ${contours.size} contrast contours")
+        
+        // UPDATE PIXEL CONTRAST: Convert contours to pixel intensity map
+        updatePixelContrastFromContours(contours, faceX, faceY, faceW, faceH)
         
         // Filter contours (EXTREMELY permissive for any motion)
         var validContoursFound = 0
@@ -1441,6 +1492,143 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         kernel.release()
     }
 
+    private fun initializePixelContrastSystem(width: Int, height: Int) {
+        if (contrastFrameWidth != width || contrastFrameHeight != height) {
+            contrastFrameWidth = width
+            contrastFrameHeight = height
+            val totalPixels = width * height
+            
+            pixelContrastMap = FloatArray(totalPixels) { 0f }
+            pixelDecayTimestamps = LongArray(totalPixels) { System.currentTimeMillis() }
+            
+            Log.d("OverlayView", "Initialized pixel contrast system: ${width}x${height} = ${totalPixels} pixels")
+        }
+    }
+    
+    private fun updatePixelContrastFromContours(contours: List<MatOfPoint>, faceX: Int, faceY: Int, faceW: Int, faceH: Int) {
+        if (pixelContrastMap.isEmpty()) return
+        
+        val currentTime = System.currentTimeMillis()
+        val faceStartIndex = 0 // We'll work within the full frame
+        
+        // First, apply decay to all pixels
+        for (i in pixelContrastMap.indices) {
+            val timeSinceUpdate = currentTime - pixelDecayTimestamps[i]
+            
+            if (timeSinceUpdate > timeBasedDecayRate) {
+                // Time-based decay for old pixels
+                pixelContrastMap[i] *= 0.95f // Faster decay for old pixels
+            } else {
+                // Frame-based decay for recent pixels
+                pixelContrastMap[i] *= pixelDecayRate
+            }
+            
+            // Remove very dim pixels
+            if (pixelContrastMap[i] < minVisibleIntensity * 0.5f) {
+                pixelContrastMap[i] = 0f
+            }
+        }
+        
+        // Add intensity from new contours
+        var pixelsUpdated = 0
+        for (contour in contours) {
+            val points = contour.toArray()
+            
+            for (point in points) {
+                // Convert contour point to full frame coordinates
+                val fullX = (faceX + point.x).toInt()
+                val fullY = (faceY + point.y).toInt()
+                
+                // Check bounds
+                if (fullX >= 0 && fullX < contrastFrameWidth && fullY >= 0 && fullY < contrastFrameHeight) {
+                    val pixelIndex = fullY * contrastFrameWidth + fullX
+                    
+                    if (pixelIndex >= 0 && pixelIndex < pixelContrastMap.size) {
+                        // Boost pixel intensity (accumulation effect)
+                        val currentIntensity = pixelContrastMap[pixelIndex]
+                        val newIntensity = minOf(maxPixelIntensity, currentIntensity + pixelBoostAmount)
+                        
+                        pixelContrastMap[pixelIndex] = newIntensity
+                        pixelDecayTimestamps[pixelIndex] = currentTime
+                        pixelsUpdated++
+                        
+                        // Also boost neighboring pixels for visibility
+                        for (dx in -1..1) {
+                            for (dy in -1..1) {
+                                val neighborX = fullX + dx
+                                val neighborY = fullY + dy
+                                
+                                if (neighborX >= 0 && neighborX < contrastFrameWidth && 
+                                    neighborY >= 0 && neighborY < contrastFrameHeight) {
+                                    val neighborIndex = neighborY * contrastFrameWidth + neighborX
+                                    
+                                    if (neighborIndex >= 0 && neighborIndex < pixelContrastMap.size) {
+                                        val neighborBoost = pixelBoostAmount * 0.5f // Half intensity for neighbors
+                                        val neighborCurrent = pixelContrastMap[neighborIndex]
+                                        pixelContrastMap[neighborIndex] = minOf(maxPixelIntensity, neighborCurrent + neighborBoost)
+                                        pixelDecayTimestamps[neighborIndex] = currentTime
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        Log.d("OverlayView", "Updated ${pixelsUpdated} pixels from ${contours.size} contours")
+    }
+    
+    private fun drawPixelContrast(canvas: Canvas) {
+        if (pixelContrastMap.isEmpty() || contrastFrameWidth <= 0 || contrastFrameHeight <= 0) {
+            return
+        }
+        
+        val paint = Paint().apply {
+            style = Paint.Style.FILL
+        }
+        
+        var visiblePixels = 0
+        val pixelSize = 2f // Size of each pixel square
+        
+        // Calculate scale factors
+        val scaleX = width.toFloat() / contrastFrameWidth
+        val scaleY = height.toFloat() / contrastFrameHeight
+        
+        for (y in 0 until contrastFrameHeight step 2) { // Skip every other pixel for performance
+            for (x in 0 until contrastFrameWidth step 2) {
+                val pixelIndex = y * contrastFrameWidth + x
+                
+                if (pixelIndex < pixelContrastMap.size) {
+                    val intensity = pixelContrastMap[pixelIndex]
+                    
+                    if (intensity >= minVisibleIntensity) {
+                        // Map intensity to color (red with varying alpha and brightness)
+                        val alpha = (intensity * 255).toInt().coerceIn(0, 255)
+                        val brightness = (intensity * 255).toInt().coerceIn(100, 255)
+                        
+                        paint.color = Color.argb(alpha, brightness, 0, 0) // Red with intensity-based alpha/brightness
+                        
+                        // Draw pixel as small rectangle
+                        val screenX = x * scaleX
+                        val screenY = y * scaleY
+                        
+                        canvas.drawRect(
+                            screenX, 
+                            screenY, 
+                            screenX + pixelSize * scaleX, 
+                            screenY + pixelSize * scaleY, 
+                            paint
+                        )
+                        visiblePixels++
+                    }
+                }
+            }
+        }
+        
+        Log.d("OverlayView", "Drew ${visiblePixels} visible contrast pixels")
+    }
+    
     private fun updateContrastBasedHeatmap(frameShape: Mat) {
         // CONTRAST HEATMAP: Generate heatmap from contrast contours (not HSV skin)
         val facePosition = storedMediaPipePosition ?: lastFaceRegions.firstOrNull()
