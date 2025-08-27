@@ -58,16 +58,16 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
     private val maxHeatmapValue = 100f
     private var dynamicContrastThreshold = 30.0
     
-    // PIXEL-BASED CONTRAST SYSTEM
-    private var pixelContrastMap = FloatArray(0) // Pixel intensity array for current frame
-    private var pixelDecayTimestamps = LongArray(0) // Last update time per pixel
+    // PYTHON-STYLE CONTRAST SYSTEM
+    private var pythonHeatmap: Mat? = null // Python-style heatmap matrix
+    private var heatmapMediPipePosition: RectF? = null // Store MediaPipe position for heatmap reference
+    private val heatmapResetDistance = 100f // Reset heatmap if MediaPipe moves this far
     private var contrastFrameWidth = 0
     private var contrastFrameHeight = 0
-    private val maxPixelIntensity = 1.0f
-    private val pixelDecayRate = 0.98f // 98% retention per frame (2% decay)
-    private val pixelBoostAmount = 0.4f // Boost when detected again
-    private val minVisibleIntensity = 0.15f // Minimum to be visible
-    private val timeBasedDecayRate = 50L // Decay faster if not updated for 50ms
+    private val heatmapDecayInside = 0.98f // 2% decay inside face area (like Python)
+    private val heatmapDecayOutside = 0.1f // 90% decay outside face area (like Python)
+    private val heatIntensity = 0.4f // Heat intensity for new detections (like Python)
+    private var pythonCurrentObjects = mutableListOf<FaceRect>() // Current detected objects
     
     // Enhanced contrast processing
     private var clahe: Any? = null
@@ -338,8 +338,8 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
                 }
             }
             
-            // PIXEL CONTRAST DISPLAY: Draw pixel-based contrast visualization
-            drawPixelContrast(canvas)
+            // PYTHON HEATMAP DISPLAY: Draw Python-style colored heatmap overlay
+            drawPythonHeatmapOverlay(canvas)
             
             // PYTHON STYLE DISPLAY: Draw Python-style detection results  
             drawPythonStyleResults(canvas)
@@ -469,18 +469,15 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
             isAntiAlias = true
             setShadowLayer(1f, 1f, 1f, Color.BLACK)
         }
-        canvas.drawText("PIXEL-BASED CONTRAST DETECTION", 20f, 520f, perfPaint)
-        canvas.drawText("Dynamic Threshold: ${String.format("%.1f", dynamicContrastThreshold)}", 20f, 550f, perfPaint)
-        canvas.drawText("Pixel Array: ${contrastFrameWidth}x${contrastFrameHeight}", 20f, 580f, perfPaint)
+        canvas.drawText("PYTHON-STYLE CONTRAST DETECTION", 20f, 520f, perfPaint)
+        canvas.drawText("MediaPipe Interval: 0.2s", 20f, 550f, perfPaint)
+        canvas.drawText("HSV Skin Detection", 20f, 580f, perfPaint)
         
-        // Count visible pixels
-        val visiblePixels = if (pixelContrastMap.isNotEmpty()) {
-            pixelContrastMap.count { it >= minVisibleIntensity }
-        } else 0
-        
-        canvas.drawText("Active Pixels: ${visiblePixels}", 20f, 610f, perfPaint)
+        // Show Python object count
+        val pythonObjectCount = pythonCurrentObjects.size
+        canvas.drawText("Python Objects: ${pythonObjectCount}", 20f, 610f, perfPaint)
         canvas.drawText("Stored MediaPipe Pos: ${if (storedMediaPipePosition != null) "YES" else "NO"}", 20f, 640f, perfPaint)
-        canvas.drawText("Previous Frame: ${if (previousFrame != null) "YES" else "NO"}", 20f, 670f, perfPaint)
+        canvas.drawText("Heatmap Active: ${if (pythonHeatmap != null) "YES" else "NO"}", 20f, 670f, perfPaint)
         
         // CONTRAST HEATMAP: Draw the heatmap overlay
         drawContrastHeatmapOverlay(canvas)
@@ -1034,53 +1031,37 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
     }
     
     private fun performLiveContrastDetection(currentMat: Mat) {
-        // LIVE CONTRAST DETECTION: Use stored MediaPipe position for continuous processing
-        currentObjects.clear()
+        // PYTHON-STYLE CONTRAST DETECTION: Replicate exact Python contrast detection logic
+        pythonCurrentObjects.clear()
         
-        // Use stored MediaPipe position if available, otherwise use current face regions
-        val facePosition = storedMediaPipePosition ?: lastFaceRegions.firstOrNull()
+        // Use stored MediaPipe position (equivalent to Python's Haar cascade face)
+        val mediaPipeFace = storedMediaPipePosition ?: lastFaceRegions.firstOrNull()
         
-        Log.d("OverlayView", "=== LIVE CONTRAST DETECTION === Frame: ${currentMat.cols()}x${currentMat.rows()}")
+        Log.d("OverlayView", "=== PYTHON-STYLE CONTRAST DETECTION === Frame: ${currentMat.cols()}x${currentMat.rows()}")
         
-        if (facePosition == null) {
-            Log.d("OverlayView", "No face position available - creating EMERGENCY fallback detection")
+        if (mediaPipeFace == null) {
+            Log.d("OverlayView", "No MediaPipe face - using fallback center detection")
             
-            // EMERGENCY FALLBACK: Use center of frame and create test objects
-            val centerX = currentMat.cols() / 4
-            val centerY = currentMat.rows() / 4
-            val testW = currentMat.cols() / 2
-            val testH = currentMat.rows() / 2
+            // PYTHON FALLBACK: Use center of frame like Python does
+            val centerX = currentMat.cols() / 2 - 100
+            val centerY = currentMat.rows() / 2 - 100
+            val defaultW = 200
+            val defaultH = 200
             
-            // FAST EMERGENCY: Skip object creation, go directly to pixel generation
+            // Ensure within bounds
+            val boundedX = maxOf(0, minOf(centerX, currentMat.cols() - defaultW))
+            val boundedY = maxOf(0, minOf(centerY, currentMat.rows() - defaultH))
             
-            // EMERGENCY: Initialize pixel system and add some fallback pixel activity
-            initializePixelContrastSystem(currentMat.cols(), currentMat.rows())
+            pythonCurrentObjects.add(FaceRect(boundedX, boundedY, boundedX + defaultW, boundedY + defaultH))
             
-            // Create some emergency pixel activity in center for testing
-            val currentTime = System.currentTimeMillis()
-            val pixelCenterX = currentMat.cols() / 2
-            val pixelCenterY = currentMat.rows() / 2
-            val radius = minOf(currentMat.cols(), currentMat.rows()) / 6
-            
-            for (i in 0..20) {
-                val angle = (i * 18.0) * Math.PI / 180.0 // Every 18 degrees
-                val x = (pixelCenterX + Math.cos(angle) * radius).toInt()
-                val y = (pixelCenterY + Math.sin(angle) * radius).toInt()
-                
-                if (x >= 0 && x < contrastFrameWidth && y >= 0 && y < contrastFrameHeight) {
-                    val pixelIndex = y * contrastFrameWidth + x
-                    if (pixelIndex < pixelContrastMap.size) {
-                        pixelContrastMap[pixelIndex] = pixelBoostAmount
-                        pixelDecayTimestamps[pixelIndex] = currentTime
-                    }
-                }
-            }
-            
-            Log.d("OverlayView", "EMERGENCY: Created fallback pixel ring pattern")
-            
-            // Emergency pixels created - no need for additional heatmap processing
+            // Initialize heatmap for fallback
+            initializePythonHeatmap(currentMat.cols(), currentMat.rows())
+            updatePythonHeatmap(currentMat, mediaPipeFace)
             return
         }
+        
+        // PYTHON LOGIC: Use MediaPipe face as main detection, find contours inside face area
+        performPythonContrastDetection(currentMat, mediaPipeFace)
         
         val faceX = max(0, facePosition.left.toInt())
         val faceY = max(0, facePosition.top.toInt())
@@ -1196,6 +1177,329 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         cleanMat.release()
         
         Log.d("OverlayView", "Live contrast detection complete: ${currentObjects.size} objects found")
+    }
+    
+    private fun performPythonContrastDetection(currentMat: Mat, mediaPipeFace: RectF) {
+        // PYTHON EXACT REPLICATION: HSV skin detection inside MediaPipe face area
+        val faceX = maxOf(0, mediaPipeFace.left.toInt())
+        val faceY = maxOf(0, mediaPipeFace.top.toInt())
+        val faceW = minOf(currentMat.cols() - faceX, (mediaPipeFace.right - mediaPipeFace.left).toInt())
+        val faceH = minOf(currentMat.rows() - faceY, (mediaPipeFace.bottom - mediaPipeFace.top).toInt())
+        
+        if (faceW <= 0 || faceH <= 0) return
+        
+        // PYTHON: Define search area with minimal padding (5 pixels like Python)
+        val searchPadding = 5
+        val searchX = maxOf(0, faceX - searchPadding)
+        val searchY = maxOf(0, faceY - searchPadding)
+        val searchW = minOf(currentMat.cols() - searchX, faceW + 2 * searchPadding)
+        val searchH = minOf(currentMat.rows() - searchY, faceH + 2 * searchPadding)
+        
+        // PYTHON: Extract search region
+        val searchRegion = Mat(currentMat, org.opencv.core.Rect(searchX, searchY, searchW, searchH))
+        
+        if (searchRegion.size().area() <= 0) {
+            searchRegion.release()
+            return
+        }
+        
+        // PYTHON: Convert to HSV for skin tone detection (exact Python values)
+        val hsvRegion = Mat()
+        Imgproc.cvtColor(searchRegion, hsvRegion, Imgproc.COLOR_RGB2HSV)
+        
+        // PYTHON: Exact skin tone range from Python code
+        val lowerSkin = Scalar(0.0, 30.0, 60.0, 0.0)
+        val upperSkin = Scalar(20.0, 255.0, 255.0, 255.0)
+        
+        // PYTHON: Create mask for skin tone
+        val mask = Mat()
+        Core.inRange(hsvRegion, lowerSkin, upperSkin, mask)
+        
+        // PYTHON: Fast morphological operations (exact Python kernel)
+        val kernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, Size(3.0, 3.0))
+        val erodedMask = Mat()
+        val dilatedMask = Mat()
+        Imgproc.erode(mask, erodedMask, kernel, Point(-1.0, -1.0), 1)
+        Imgproc.dilate(erodedMask, dilatedMask, kernel, Point(-1.0, -1.0), 1)
+        
+        // PYTHON: Find contours (exact Python parameters)
+        val contours = mutableListOf<MatOfPoint>()
+        val hierarchy = Mat()
+        Imgproc.findContours(dilatedMask, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
+        
+        Log.d("OverlayView", "Python HSV detection: Found ${contours.size} contours in search area")
+        
+        // PYTHON: Filter contours by size and aspect ratio (exact Python logic)
+        val mediaPipeSize = faceW * faceH
+        val mediaPipeCenterX = faceX + faceW / 2
+        val mediaPipeCenterY = faceY + faceH / 2
+        
+        val potentialObjects = mutableListOf<Array<Any>>() // [x, y, w, h, size, score]
+        
+        for (contour in contours) {
+            val boundingRect = Imgproc.boundingRect(contour)
+            val contourSize = boundingRect.width * boundingRect.height
+            
+            // PYTHON: Size ratio filtering (30% to 300% of MediaPipe face size)
+            val sizeRatio = contourSize.toFloat() / mediaPipeSize
+            if (sizeRatio in 0.3f..3.0f) {
+                // PYTHON: Aspect ratio filtering (0.5 to 2.0)
+                val aspectRatio = boundingRect.width.toFloat() / boundingRect.height
+                if (aspectRatio in 0.5f..2.0f) {
+                    // PYTHON: Convert back to full frame coordinates
+                    val fullX = searchX + boundingRect.x
+                    val fullY = searchY + boundingRect.y
+                    val fullW = boundingRect.width
+                    val fullH = boundingRect.height
+                    
+                    // PYTHON: Calculate score based on distance and size similarity (exact Python logic)
+                    val objCenterX = fullX + fullW / 2
+                    val objCenterY = fullY + fullH / 2
+                    val distance = kotlin.math.sqrt(
+                        ((mediaPipeCenterX - objCenterX) * (mediaPipeCenterX - objCenterX) + 
+                         (mediaPipeCenterY - objCenterY) * (mediaPipeCenterY - objCenterY)).toDouble()
+                    ).toFloat()
+                    
+                    val sizeSimilarity = kotlin.math.abs(1.0f - (contourSize.toFloat() / mediaPipeSize))
+                    val score = distance + (sizeSimilarity * 50f) // Python: Weight size similarity
+                    
+                    potentialObjects.add(arrayOf(fullX, fullY, fullW, fullH, contourSize, score))
+                }
+            }
+        }
+        
+        // PYTHON: Find the best object (lowest score) - Python selects only ONE object
+        if (potentialObjects.isNotEmpty()) {
+            val bestObject = potentialObjects.minByOrNull { it[5] as Float }
+            if (bestObject != null) {
+                val objX = bestObject[0] as Int
+                val objY = bestObject[1] as Int
+                val objW = bestObject[2] as Int
+                val objH = bestObject[3] as Int
+                
+                pythonCurrentObjects.add(FaceRect(objX, objY, objX + objW, objY + objH))
+                Log.d("OverlayView", "Python: Selected best object at ${objX},${objY} size ${objW}x${objH}")
+            }
+        } else {
+            Log.d("OverlayView", "Python: No valid contours found, using fallback")
+            // PYTHON FALLBACK: Add MediaPipe face itself as object
+            pythonCurrentObjects.add(FaceRect(faceX, faceY, faceX + faceW, faceY + faceH))
+        }
+        
+        // Clean up
+        contours.forEach { it.release() }
+        hierarchy.release()
+        searchRegion.release()
+        hsvRegion.release()
+        mask.release()
+        erodedMask.release()
+        dilatedMask.release()
+        kernel.release()
+    }
+    
+    private fun initializePythonHeatmap(width: Int, height: Int) {
+        if (contrastFrameWidth != width || contrastFrameHeight != height) {
+            contrastFrameWidth = width
+            contrastFrameHeight = height
+            
+            pythonHeatmap?.release()
+            pythonHeatmap = Mat.zeros(height, width, CvType.CV_32F)
+            
+            Log.d("OverlayView", "Initialized Python heatmap: ${width}x${height}")
+        }
+    }
+    
+    private fun updatePythonHeatmap(frameShape: Mat, mediaPipeFace: RectF?) {
+        if (pythonHeatmap == null) return
+        
+        val currentMediaPipeCenter = if (mediaPipeFace != null) {
+            val centerX = mediaPipeFace.left + (mediaPipeFace.right - mediaPipeFace.left) / 2
+            val centerY = mediaPipeFace.top + (mediaPipeFace.bottom - mediaPipeFace.top) / 2
+            Pair(centerX, centerY)
+        } else null
+        
+        // PYTHON: Check if we need to reset heatmap due to MediaPipe movement
+        if (heatmapMediPipePosition != null && mediaPipeFace != null) {
+            val oldCenterX = heatmapMediPipePosition!!.left + (heatmapMediPipePosition!!.right - heatmapMediPipePosition!!.left) / 2
+            val oldCenterY = heatmapMediPipePosition!!.top + (heatmapMediPipePosition!!.bottom - heatmapMediPipePosition!!.top) / 2
+            
+            val distance = kotlin.math.sqrt(
+                ((currentMediaPipeCenter!!.first - oldCenterX) * (currentMediaPipeCenter.first - oldCenterX) + 
+                 (currentMediaPipeCenter.second - oldCenterY) * (currentMediaPipeCenter.second - oldCenterY)).toDouble()
+            ).toFloat()
+            
+            if (distance > heatmapResetDistance) {
+                // Reset heatmap if MediaPipe moved too far
+                pythonHeatmap = Mat.zeros(contrastFrameHeight, contrastFrameWidth, CvType.CV_32F)
+                Log.d("OverlayView", "Python heatmap reset - MediaPipe moved ${distance.toInt()}px")
+            }
+        }
+        
+        // PYTHON: Apply decay with face area awareness (exact Python logic)
+        if (mediaPipeFace != null) {
+            val faceX = maxOf(0, mediaPipeFace.left.toInt())
+            val faceY = maxOf(0, mediaPipeFace.top.toInt())
+            val faceW = minOf(contrastFrameWidth - faceX, (mediaPipeFace.right - mediaPipeFace.left).toInt())
+            val faceH = minOf(contrastFrameHeight - faceY, (mediaPipeFace.bottom - mediaPipeFace.top).toInt())
+            
+            // PYTHON: Add 5-pixel padding like Python
+            val padding = 5
+            val paddedX = maxOf(0, faceX - padding)
+            val paddedY = maxOf(0, faceY - padding)
+            val paddedW = minOf(contrastFrameWidth - paddedX, faceW + 2 * padding)
+            val paddedH = minOf(contrastFrameHeight - paddedY, faceH + 2 * padding)
+            
+            // PYTHON: Apply different decay rates inside vs outside face
+            val insideDecay = Scalar(heatmapDecayInside.toDouble()) // 2% decay inside
+            val outsideDecay = Scalar(heatmapDecayOutside.toDouble()) // 90% decay outside
+            
+            // Create masks for inside and outside face area
+            val insideMask = Mat.zeros(contrastFrameHeight, contrastFrameWidth, CvType.CV_8U)
+            val insideRect = org.opencv.core.Rect(paddedX, paddedY, paddedW, paddedH)
+            Imgproc.rectangle(insideMask, insideRect, Scalar(255.0), -1)
+            
+            val outsideMask = Mat.ones(contrastFrameHeight, contrastFrameWidth, CvType.CV_8U)
+            Core.subtract(outsideMask, insideMask, outsideMask)
+            
+            // Apply decay
+            val insideArea = Mat()
+            val outsideArea = Mat()
+            pythonHeatmap!!.copyTo(insideArea, insideMask)
+            pythonHeatmap!!.copyTo(outsideArea, outsideMask)
+            
+            Core.multiply(insideArea, insideDecay, insideArea)
+            Core.multiply(outsideArea, outsideDecay, outsideArea)
+            
+            Core.add(insideArea, outsideArea, pythonHeatmap)
+            
+            // Clean up
+            insideMask.release()
+            outsideMask.release()
+            insideArea.release()
+            outsideArea.release()
+        } else {
+            // No face - apply general decay
+            val generalDecay = Scalar(heatmapDecayOutside.toDouble())
+            Core.multiply(pythonHeatmap!!, generalDecay, pythonHeatmap!!)
+        }
+        
+        // PYTHON: Add heat for current objects (exact Python intensity logic)
+        for (obj in pythonCurrentObjects) {
+            val objCenterX = obj.left + (obj.right - obj.left) / 2
+            val objCenterY = obj.top + (obj.bottom - obj.top) / 2
+            
+            if (mediaPipeFace != null) {
+                val faceCenterX = mediaPipeFace.left + (mediaPipeFace.right - mediaPipeFace.left) / 2
+                val faceCenterY = mediaPipeFace.top + (mediaPipeFace.bottom - mediaPipeFace.top) / 2
+                
+                // PYTHON: Calculate distance-based heat intensity
+                val distanceToCenter = kotlin.math.sqrt(
+                    ((objCenterX - faceCenterX) * (objCenterX - faceCenterX) + 
+                     (objCenterY - faceCenterY) * (objCenterY - faceCenterY)).toDouble()
+                ).toFloat()
+                
+                val maxDistance = kotlin.math.sqrt(
+                    ((mediaPipeFace.width() / 2 + 5) * (mediaPipeFace.width() / 2 + 5) + 
+                     (mediaPipeFace.height() / 2 + 5) * (mediaPipeFace.height() / 2 + 5)).toDouble()
+                ).toFloat()
+                
+                val distanceRatio = minOf(distanceToCenter / maxDistance, 1.0f)
+                val heatIntensityFinal = heatIntensity * (1.0f - distanceRatio * 0.1f) // Python formula
+                
+                // PYTHON: Add heat in object area
+                val objRect = org.opencv.core.Rect(
+                    maxOf(0, obj.left),
+                    maxOf(0, obj.top),
+                    minOf(contrastFrameWidth - maxOf(0, obj.left), obj.right - obj.left),
+                    minOf(contrastFrameHeight - maxOf(0, obj.top), obj.bottom - obj.top)
+                )
+                
+                if (objRect.width > 0 && objRect.height > 0) {
+                    val heatAddition = Mat(objRect.height, objRect.width, CvType.CV_32F, Scalar(heatIntensityFinal.toDouble()))
+                    val roi = Mat(pythonHeatmap!!, objRect)
+                    Core.add(roi, heatAddition, roi)
+                    
+                    heatAddition.release()
+                    roi.release()
+                }
+            }
+        }
+        
+        // Update stored MediaPipe position
+        heatmapMediPipePosition = mediaPipeFace
+        
+        Log.d("OverlayView", "Python heatmap updated: ${pythonCurrentObjects.size} objects processed")
+    }
+    
+    private fun drawPythonHeatmapOverlay(canvas: Canvas) {
+        if (pythonHeatmap == null || contrastFrameWidth <= 0 || contrastFrameHeight <= 0) {
+            return
+        }
+        
+        try {
+            // PYTHON: Normalize heatmap to 0-255 range (like Python cv2.applyColorMap)
+            val minMaxLoc = Core.minMaxLoc(pythonHeatmap!!)
+            val maxHeat = minMaxLoc.maxVal
+            
+            if (maxHeat > 0.0) {
+                // Create normalized heatmap for color mapping
+                val normalizedHeatmap = Mat()
+                Core.normalize(pythonHeatmap!!, normalizedHeatmap, 0.0, 255.0, Core.NORM_MINMAX)
+                normalizedHeatmap.convertTo(normalizedHeatmap, CvType.CV_8U)
+                
+                // PYTHON: Apply JET colormap (exact Python cv2.COLORMAP_JET equivalent)
+                val coloredHeatmap = Mat()
+                Imgproc.applyColorMap(normalizedHeatmap, coloredHeatmap, Imgproc.COLORMAP_JET)
+                
+                // Convert to bitmap for Android drawing
+                val heatmapBitmap = Bitmap.createBitmap(
+                    coloredHeatmap.cols(), 
+                    coloredHeatmap.rows(), 
+                    Bitmap.Config.ARGB_8888
+                )
+                Utils.matToBitmap(coloredHeatmap, heatmapBitmap)
+                
+                // PYTHON: Blend with frame (30% opacity like Python cv2.addWeighted)
+                val heatmapPaint = Paint().apply {
+                    alpha = (0.3f * 255).toInt() // 30% opacity like Python
+                }
+                
+                // Scale and position heatmap to match camera view
+                val scaleX = uniformScaleFactor
+                val scaleY = uniformScaleFactor
+                
+                val scaledHeatmap = Bitmap.createScaledBitmap(
+                    heatmapBitmap,
+                    (contrastFrameWidth * scaleX).toInt(),
+                    (contrastFrameHeight * scaleY).toInt(),
+                    true
+                )
+                
+                // Draw heatmap overlay at correct position
+                canvas.drawBitmap(scaledHeatmap, xOffset, yOffset, heatmapPaint)
+                
+                // Clean up
+                normalizedHeatmap.release()
+                coloredHeatmap.release()
+                heatmapBitmap.recycle()
+                scaledHeatmap.recycle()
+                
+                // Show heatmap status (like Python)
+                val heatmapStatusPaint = Paint().apply {
+                    color = Color.CYAN
+                    textSize = 20f
+                    isAntiAlias = true
+                    setShadowLayer(2f, 1f, 1f, Color.BLACK)
+                }
+                canvas.drawText("Python Heatmap: ${String.format("%.3f", maxHeat)} (JET)", 20f, 700f, heatmapStatusPaint)
+                canvas.drawText("Inside Face: 2% Decay/Frame", 20f, 730f, heatmapStatusPaint)
+                canvas.drawText("Outside Face: 90% Decay/Frame", 20f, 760f, heatmapStatusPaint)
+                
+                Log.d("OverlayView", "Drew Python heatmap overlay: max heat = ${String.format("%.3f", maxHeat)}")
+            }
+        } catch (e: Exception) {
+            Log.e("OverlayView", "Error drawing Python heatmap: ${e.message}")
+        }
     }
 
     private fun performPythonStyleDetection(currentMat: Mat) {

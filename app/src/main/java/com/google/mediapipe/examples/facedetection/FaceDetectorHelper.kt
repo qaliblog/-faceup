@@ -33,7 +33,7 @@ class FaceDetectorHelper(
     private var faceDetector: FaceDetector? = null
     private var currentBitmap: Bitmap? = null
     private var lastDetectionTime = 0L
-    private var baseDetectionInterval = 500L // Base interval: 0.5 seconds
+    private var baseDetectionInterval = 200L // Base interval: 0.2 seconds (Python-style)
     private var adaptiveDetectionInterval = 500L // Current adaptive interval
     
     // Position tracking for adaptive intervals
