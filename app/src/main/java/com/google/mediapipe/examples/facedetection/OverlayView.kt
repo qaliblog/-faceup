@@ -1004,7 +1004,11 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         // EXACT PYTHON REPLICATION: Use MediaPipe as main detection, then find closest contour with similar size
         currentObjects.clear()
         
+        Log.d("OverlayView", "=== DETECTION START === Frame: ${currentMat.cols()}x${currentMat.rows()}")
+        Log.d("OverlayView", "Face regions available: ${lastFaceRegions.size}")
+        
         if (lastFaceRegions.isEmpty()) {
+            Log.d("OverlayView", "No MediaPipe faces detected - using fallback")
             // Python: If no MediaPipe face, use a simple fallback (much faster)
             // Just use a default face area in the center of the frame
             val centerX = currentMat.cols() / 2 - 100
@@ -1017,6 +1021,7 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
             val fallbackY = max(0, min(centerY, currentMat.rows() - defaultH))
             
             currentObjects.add(FaceRect(fallbackX, fallbackY, fallbackX + defaultW, fallbackY + defaultH))
+            Log.d("OverlayView", "Added fallback object: ${fallbackX},${fallbackY},${defaultW},${defaultH}")
             return
         }
         
@@ -1046,9 +1051,9 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         val hsvRegion = Mat()
         Imgproc.cvtColor(searchRegion, hsvRegion, Imgproc.COLOR_RGB2HSV)
         
-        // Python: Optimized skin tone range for face detection
-        val lowerSkin = Scalar(0.0, 30.0, 60.0)
-        val upperSkin = Scalar(20.0, 255.0, 255.0)
+        // Python: Optimized skin tone range for face detection (made more permissive)
+        val lowerSkin = Scalar(0.0, 20.0, 40.0)  // Lower saturation and value thresholds
+        val upperSkin = Scalar(25.0, 255.0, 255.0)  // Wider hue range
         
         // Create a mask for skin tone
         val mask = Mat()
@@ -1066,20 +1071,28 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         val hierarchy = Mat()
         Imgproc.findContours(dilatedMask, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
         
+        Log.d("OverlayView", "MediaPipe face: ${faceX},${faceY},${faceW},${faceH} (size=${faceSize})")
+        Log.d("OverlayView", "Search area: ${searchX},${searchY},${searchW},${searchH}")
+        Log.d("OverlayView", "Found ${contours.size} contours in HSV skin mask")
+        
         // PYTHON LOGIC: Find the closest contour with similar size to MediaPipe face
         val potentialObjects = mutableListOf<Pair<FaceRect, Double>>() // <object, score>
         
-        for (contour in contours) {
+        for ((index, contour) in contours.withIndex()) {
             // Get bounding rectangle
             val boundingRect = Imgproc.boundingRect(contour)
             val contourSize = boundingRect.width * boundingRect.height
             
             // Python: Filter by reasonable size (similar to MediaPipe face)
             val sizeRatio = contourSize.toFloat() / faceSize.toFloat()
-            if (sizeRatio in 0.3f..3.0f) {  // Allow contours 30% to 300% of MediaPipe size
-                // Python: Filter for face-like aspect ratios
+            Log.d("OverlayView", "Contour $index: ${boundingRect.width}x${boundingRect.height} (size=$contourSize, ratio=${String.format("%.2f", sizeRatio)})")
+            
+            if (sizeRatio in 0.1f..5.0f) {  // Much more permissive: 10% to 500% of MediaPipe size
+                // Python: Filter for face-like aspect ratios (more permissive)
                 val aspectRatio = boundingRect.width.toFloat() / boundingRect.height.toFloat()
-                if (aspectRatio in 0.5f..2.0f) {
+                Log.d("OverlayView", "  Size passed, aspect ratio: ${String.format("%.2f", aspectRatio)}")
+                
+                if (aspectRatio in 0.2f..5.0f) {  // Much more permissive aspect ratios
                     // Convert coordinates back to full frame
                     val fullX = searchX + boundingRect.x
                     val fullY = searchY + boundingRect.y
@@ -1110,11 +1123,28 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         }
         
         // Python: Find the best object (lowest score = closest + most similar size)
+        Log.d("OverlayView", "Potential objects after filtering: ${potentialObjects.size}")
+        
         if (potentialObjects.isNotEmpty()) {
-            val bestObject = potentialObjects.minByOrNull { it.second }?.first
+            val bestMatch = potentialObjects.minByOrNull { it.second }
+            val bestObject = bestMatch?.first
+            val bestScore = bestMatch?.second
+            
             if (bestObject != null) {
                 currentObjects.add(bestObject)  // PYTHON: Only ONE object per frame
+                Log.d("OverlayView", "Selected best object: score=${String.format("%.1f", bestScore)}, rect=${bestObject.left},${bestObject.top},${bestObject.right-bestObject.left},${bestObject.bottom-bestObject.top}")
             }
+        } else {
+            Log.d("OverlayView", "No objects passed filtering - no skin contours found!")
+            
+            // FALLBACK: Create a test object in the center of MediaPipe face for debugging
+            val testX = searchX + searchW / 4
+            val testY = searchY + searchH / 4  
+            val testW = searchW / 2
+            val testH = searchH / 2
+            val testObject = FaceRect(testX, testY, testX + testW, testY + testH)
+            currentObjects.add(testObject)
+            Log.d("OverlayView", "Added fallback test object for debugging: ${testX},${testY},${testW},${testH}")
         }
         
         // Clean up
@@ -1132,7 +1162,12 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         // PYTHON HEATMAP: Exact replication of Python heatmap logic
         val facePosition = lastFaceRegions.firstOrNull() // Use first face like Python
         
-        if (facePosition == null) return
+        Log.d("OverlayView", "=== HEATMAP UPDATE === Objects: ${currentObjects.size}")
+        
+        if (facePosition == null) {
+            Log.d("OverlayView", "No face position for heatmap")
+            return
+        }
         
         val faceX = facePosition.left.toInt()
         val faceY = facePosition.top.toInt()
