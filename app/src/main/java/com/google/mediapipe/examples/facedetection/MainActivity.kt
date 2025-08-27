@@ -16,14 +16,14 @@
 package com.google.mediapipe.examples.facedetection
 
 import android.os.Bundle
-import androidx.activity.viewModels
+// import androidx.activity.viewModels
 import androidx.appcompat.app.AppCompatActivity
 import com.google.mediapipe.examples.facedetection.databinding.ActivityMainBinding
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var activityMainBinding: ActivityMainBinding
-    private val viewModel: MainViewModel by viewModels()
+    // private val viewModel: MainViewModel by viewModels()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)

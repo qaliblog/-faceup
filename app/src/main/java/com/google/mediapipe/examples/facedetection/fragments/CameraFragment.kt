@@ -5,6 +5,7 @@ import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.os.Bundle
 import android.util.Log
+import android.util.Size
 import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
@@ -18,10 +19,10 @@ import androidx.camera.core.Preview
 import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
-import androidx.fragment.app.activityViewModels
+// import androidx.fragment.app.activityViewModels
 import androidx.navigation.Navigation
 import com.google.mediapipe.examples.facedetection.FaceDetectorHelper
-import com.google.mediapipe.examples.facedetection.MainViewModel
+// import com.google.mediapipe.examples.facedetection.MainViewModel
 import com.google.mediapipe.examples.facedetection.R
 import com.google.mediapipe.examples.facedetection.databinding.FragmentCameraBinding
 import com.google.mediapipe.tasks.vision.core.RunningMode
@@ -39,7 +40,7 @@ class CameraFragment : Fragment(), FaceDetectorHelper.DetectorListener {
         get() = _fragmentCameraBinding!!
 
     private lateinit var faceDetectorHelper: FaceDetectorHelper
-    private val viewModel: MainViewModel by activityViewModels()
+    // private val viewModel: MainViewModel by activityViewModels()
     private var preview: Preview? = null
     private var imageAnalyzer: ImageAnalysis? = null
     private var camera: Camera? = null
@@ -48,6 +49,8 @@ class CameraFragment : Fragment(), FaceDetectorHelper.DetectorListener {
 
     /** Blocking ML operations are performed using this executor */
     private lateinit var backgroundExecutor: ExecutorService
+    
+    private var isFaceDetectorInitialized = false
 
     override fun onResume() {
         super.onResume()
@@ -61,9 +64,15 @@ class CameraFragment : Fragment(), FaceDetectorHelper.DetectorListener {
                 .navigate(CameraFragmentDirections.actionCameraToPermissions())
         }
 
-        backgroundExecutor.execute {
-            if (faceDetectorHelper.isClosed()) {
-                faceDetectorHelper.setupFaceDetector()
+        if(isFaceDetectorInitialized && this::faceDetectorHelper.isInitialized && this::backgroundExecutor.isInitialized) {
+            backgroundExecutor.execute {
+                try {
+                    if (faceDetectorHelper.isClosed()) {
+                        faceDetectorHelper.setupFaceDetector()
+                    }
+                } catch (e: Exception) {
+                    // Ignore setup errors in onResume
+                }
             }
         }
     }
@@ -72,21 +81,30 @@ class CameraFragment : Fragment(), FaceDetectorHelper.DetectorListener {
         super.onPause()
 
         // Close the face detector and release resources
-        if(this::faceDetectorHelper.isInitialized) {
-            backgroundExecutor.execute { faceDetectorHelper.clearFaceDetector() }
+        if(isFaceDetectorInitialized && this::faceDetectorHelper.isInitialized && this::backgroundExecutor.isInitialized) {
+            backgroundExecutor.execute { 
+                try {
+                    faceDetectorHelper.clearFaceDetector() 
+                } catch (e: Exception) {
+                    // Ignore cleanup errors
+                }
+            }
         }
     }
 
     override fun onDestroyView() {
         _fragmentCameraBinding = null
+        isFaceDetectorInitialized = false
         super.onDestroyView()
 
         // Shut down our background executor.
-        backgroundExecutor.shutdown()
-        backgroundExecutor.awaitTermination(
-            Long.MAX_VALUE,
-            TimeUnit.NANOSECONDS
-        )
+        if(this::backgroundExecutor.isInitialized) {
+            backgroundExecutor.shutdown()
+            backgroundExecutor.awaitTermination(
+                Long.MAX_VALUE,
+                TimeUnit.NANOSECONDS
+            )
+        }
     }
 
     override fun onCreateView(
@@ -112,15 +130,16 @@ class CameraFragment : Fragment(), FaceDetectorHelper.DetectorListener {
             faceDetectorHelper =
                 FaceDetectorHelper(
                     context = requireContext(),
-                    faceDetectorListener = this,
+                    faceDetectorListener = this@CameraFragment,
                     runningMode = RunningMode.LIVE_STREAM
                 )
+            isFaceDetectorInitialized = true
+        }
 
-            // Wait for the views to be properly laid out
-            fragmentCameraBinding.viewFinder.post {
-                // Set up the camera and its use cases
-                setUpCamera()
-            }
+        // Wait for the views to be properly laid out
+        fragmentCameraBinding.viewFinder.post {
+            // Set up the camera and its use cases
+            setUpCamera()
         }
     }
 
@@ -154,17 +173,17 @@ class CameraFragment : Fragment(), FaceDetectorHelper.DetectorListener {
             CameraSelector.Builder()
                 .requireLensFacing(CameraSelector.LENS_FACING_FRONT).build()
 
-        // Preview. Set the aspect ratio to 16:9
+        // Preview. Set lower resolution for better FPS
         preview =
             Preview.Builder()
-                .setTargetAspectRatio(AspectRatio.RATIO_16_9)
+                .setTargetAspectRatio(AspectRatio.RATIO_4_3)
                 .setTargetRotation(fragmentCameraBinding.viewFinder.display.rotation)
                 .build()
 
-        // ImageAnalysis. Using RGBA 8888 to match how our models work, set aspect ratio to 16:9
+        // ImageAnalysis
         imageAnalyzer =
             ImageAnalysis.Builder()
-                .setTargetAspectRatio(AspectRatio.RATIO_16_9)
+                .setTargetAspectRatio(AspectRatio.RATIO_4_3)
                 .setTargetRotation(fragmentCameraBinding.viewFinder.display.rotation)
                 .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                 .setOutputImageFormat(OUTPUT_IMAGE_FORMAT_RGBA_8888)
@@ -228,35 +247,54 @@ class CameraFragment : Fragment(), FaceDetectorHelper.DetectorListener {
     // Update UI after faces have been detected. Extracts original image height/width
     // to scale and place bounding boxes properly through OverlayView
     override fun onResults(resultBundle: FaceDetectorHelper.ResultBundle) {
+        Log.d("CameraFragment", "onResults called with ${resultBundle.results[0].detections().size} detections")
         activity?.runOnUiThread {
-            if (_fragmentCameraBinding != null) {
-                // Pass necessary information to OverlayView for drawing on the canvas
-                val detectionResult = resultBundle.results[0]
-                var bitmap = resultBundle.bitmap
-                val rotation = getRotationCompensation()
-                if(rotation != 0 && bitmap != null){
-                    bitmap = rotateBitmap(bitmap, rotation)
-                }
-                if (isAdded) {
-                   if (bitmap != null)
+            if (_fragmentCameraBinding != null && isAdded) {
+                try {
+                    // Pass necessary information to OverlayView for drawing on the canvas
+                    val detectionResult = resultBundle.results[0]
+                    var bitmap = resultBundle.bitmap
+                    val rotation = getRotationCompensation()
+                    if(rotation != 0 && bitmap != null){
+                        bitmap = rotateBitmap(bitmap, rotation)
+                    }
+                    if (bitmap != null) {
                         fragmentCameraBinding.overlay.setResults(
                             detectionResult,
                             bitmap.height,
                             bitmap.width,
                             bitmap
                         )
+                        Log.d("CameraFragment", "Set results to overlay - bitmap: ${bitmap.width}x${bitmap.height}")
+                    }
+
+                    // Force a redraw
+                    fragmentCameraBinding.overlay.invalidate()
+                } catch (e: Exception) {
+                    // Fragment might be destroyed, ignore
                 }
-
-
-                // Force a redraw
-                fragmentCameraBinding.overlay.invalidate()
             }
         }
     }
 
     override fun onError(error: String, errorCode: Int) {
+        Log.e("CameraFragment", "Face detector error: $error (code: $errorCode)")
         activity?.runOnUiThread {
-            Toast.makeText(requireContext(), error, Toast.LENGTH_SHORT).show()
+            if (isAdded) {
+                Toast.makeText(requireContext(), "Detection error: $error", Toast.LENGTH_LONG).show()
+            }
+        }
+    }
+    
+    override fun onFrameForContrastDetection(bitmap: Bitmap?) {
+        activity?.runOnUiThread {
+            if (_fragmentCameraBinding != null && isAdded) {
+                try {
+                    fragmentCameraBinding.overlay.processContrastDetection(bitmap)
+                } catch (e: Exception) {
+                    // Fragment might be destroyed, ignore
+                }
+            }
         }
     }
 }

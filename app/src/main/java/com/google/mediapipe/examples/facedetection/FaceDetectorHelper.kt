@@ -3,6 +3,7 @@ package com.google.mediapipe.examples.facedetection
 import android.content.Context
 import android.graphics.Bitmap
 import android.graphics.Matrix
+import android.graphics.RectF
 import android.media.MediaMetadataRetriever
 import android.net.Uri
 import android.os.SystemClock
@@ -31,6 +32,20 @@ class FaceDetectorHelper(
     // will not change, a lazy val would be preferable.
     private var faceDetector: FaceDetector? = null
     private var currentBitmap: Bitmap? = null
+    private var lastDetectionTime = 0L
+    private var baseDetectionInterval = 200L // Base interval: 0.2 seconds (Python-style)
+    private var adaptiveDetectionInterval = 500L // Current adaptive interval
+    
+    // Position tracking for adaptive intervals
+    private var lastFacePosition: RectF? = null
+    private var positionChangeThreshold = 20f // Pixels threshold for position change detection
+    
+    // Position averaging (prevents sudden jumps)
+    private var averageFaceX: Float? = null
+    private var averageFaceY: Float? = null
+    private var averageFaceW: Float? = null
+    private var averageFaceH: Float? = null
+    private val averageAlpha = 0.3f // 30% new, 70% old average
 
     init {
         setupFaceDetector()
@@ -50,8 +65,14 @@ class FaceDetectorHelper(
         val baseOptionsBuilder = BaseOptions.builder()
 
         // Use the specified hardware for running the model. Default to CPU
-        // Set delegate to GPU
-        baseOptionsBuilder.setDelegate(Delegate.GPU)
+        when (currentDelegate) {
+            DELEGATE_CPU -> {
+                baseOptionsBuilder.setDelegate(Delegate.CPU)
+            }
+            DELEGATE_GPU -> {
+                baseOptionsBuilder.setDelegate(Delegate.GPU)
+            }
+        }
 
         val modelName = "face_detection_short_range.tflite"
 
@@ -219,6 +240,12 @@ class FaceDetectorHelper(
         }
 
         val frameTime = SystemClock.uptimeMillis()
+        
+        // Calculate adaptive MediaPipe detection interval
+        adaptiveDetectionInterval = calculateAdaptiveInterval()
+        
+        // Check if enough time has passed for MediaPipe detection (adaptive)
+        val shouldDetectWithMediaPipe = frameTime - lastDetectionTime >= adaptiveDetectionInterval
 
         // Copy out RGB bits from the frame to a bitmap buffer
         val bitmapBuffer =
@@ -229,6 +256,7 @@ class FaceDetectorHelper(
             )
         imageProxy.use { bitmapBuffer.copyPixelsFromBuffer(imageProxy.planes[0].buffer) }
         imageProxy.close()
+        
         // Rotate the frame received from the camera to be in the same direction as it'll be shown
         val matrix =
             Matrix().apply {
@@ -257,11 +285,19 @@ class FaceDetectorHelper(
                 true
             )
 
-        // Convert the input Bitmap face to an MPImage face to run inference
-        val mpImage = BitmapImageBuilder(rotatedBitmap).build()
         currentBitmap = rotatedBitmap
 
-        detectAsync(mpImage, frameTime)
+        // CRITICAL: Run contrast detection on EVERY frame for full FPS synchronization
+        // This matches Python behavior where grayscale processing happens at camera FPS
+        faceDetectorListener?.onFrameForContrastDetection(rotatedBitmap)
+        
+        // Only run MediaPipe face detection at adaptive intervals for face position updates
+        if (shouldDetectWithMediaPipe) {
+            lastDetectionTime = frameTime
+            // Convert the input Bitmap face to an MPImage face to run inference
+            val mpImage = BitmapImageBuilder(rotatedBitmap).build()
+            detectAsync(mpImage, frameTime)
+        }
     }
 
     // Run face detection using MediaPipe Face Detector API
@@ -269,7 +305,16 @@ class FaceDetectorHelper(
     fun detectAsync(mpImage: MPImage, frameTime: Long) {
         // As we're using running mode LIVE_STREAM, the detection result will be returned in
         // returnLivestreamResult function
-        faceDetector?.detectAsync(mpImage, frameTime)
+        if (faceDetector == null) {
+            Log.e(TAG, "Face detector is null, cannot detect")
+            return
+        }
+        
+        try {
+            faceDetector?.detectAsync(mpImage, frameTime)
+        } catch (e: Exception) {
+            Log.e(TAG, "Error during face detection: ${e.message}")
+        }
     }
 
     // Return the detection result to this FaceDetectorHelper's caller
@@ -279,6 +324,14 @@ class FaceDetectorHelper(
     ) {
         val finishTimeMs = SystemClock.uptimeMillis()
         val inferenceTime = finishTimeMs - result.timestampMs()
+        
+        // Update face position averages for adaptive intervals
+        if (result.detections().isNotEmpty()) {
+            val detection = result.detections()[0] // Use first (largest) detection
+            val boundingBox = detection.boundingBox()
+            val faceRect = RectF(boundingBox.left, boundingBox.top, boundingBox.right, boundingBox.bottom)
+            updateFaceAverages(faceRect)
+        }
 
         faceDetectorListener?.onResults(
             ResultBundle(
@@ -335,6 +388,58 @@ class FaceDetectorHelper(
         return null
     }
 
+    private fun calculateAdaptiveInterval(): Long {
+        val lastPos = lastFacePosition ?: return baseDetectionInterval
+        
+        // Calculate distance from average position if available
+        val avgX = averageFaceX ?: lastPos.left
+        val avgY = averageFaceY ?: lastPos.top
+        val avgW = averageFaceW ?: (lastPos.right - lastPos.left)
+        val avgH = averageFaceH ?: (lastPos.bottom - lastPos.top)
+        
+        val avgCenterX = avgX + avgW / 2f
+        val avgCenterY = avgY + avgH / 2f
+        val lastCenterX = lastPos.left + (lastPos.right - lastPos.left) / 2f
+        val lastCenterY = lastPos.top + (lastPos.bottom - lastPos.top) / 2f
+        
+        val distanceFromAverage = kotlin.math.sqrt(
+            ((lastCenterX - avgCenterX) * (lastCenterX - avgCenterX) + 
+             (lastCenterY - avgCenterY) * (lastCenterY - avgCenterY)).toDouble()
+        ).toFloat()
+        
+        // Adaptive interval based on distance from average position
+        return when {
+            distanceFromAverage > positionChangeThreshold * 1.5f -> 100L // High movement - 10 FPS
+            distanceFromAverage > positionChangeThreshold -> 200L // Medium movement - 5 FPS  
+            distanceFromAverage > positionChangeThreshold * 0.5f -> 400L // Low movement - 2.5 FPS
+            else -> 1000L // Stable position - 1 FPS
+        }
+    }
+    
+    private fun updateFaceAverages(faceRect: RectF) {
+        val faceX = faceRect.left
+        val faceY = faceRect.top
+        val faceW = faceRect.right - faceRect.left
+        val faceH = faceRect.bottom - faceRect.top
+        
+        // Update averages using exponential moving average
+        if (averageFaceX != null) {
+            averageFaceX = averageAlpha * faceX + (1f - averageAlpha) * averageFaceX!!
+            averageFaceY = averageAlpha * faceY + (1f - averageAlpha) * averageFaceY!!
+            averageFaceW = averageAlpha * faceW + (1f - averageAlpha) * averageFaceW!!
+            averageFaceH = averageAlpha * faceH + (1f - averageAlpha) * averageFaceH!!
+        } else {
+            // Initialize averages
+            averageFaceX = faceX
+            averageFaceY = faceY
+            averageFaceW = faceW
+            averageFaceH = faceH
+        }
+        
+        // Update last position for change detection
+        lastFacePosition = faceRect
+    }
+
     // Wraps results from inference, the time it takes for inference to be performed, and
     // the input image and height for properly scaling UI to return back to callers
     data class ResultBundle(
@@ -359,5 +464,6 @@ class FaceDetectorHelper(
     interface DetectorListener {
         fun onError(error: String, errorCode: Int = OTHER_ERROR)
         fun onResults(resultBundle: ResultBundle)
+        fun onFrameForContrastDetection(bitmap: Bitmap?)
     }
 }
