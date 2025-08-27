@@ -512,6 +512,127 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         }
         canvas.drawText("PYTHON METHOD: HSV Skin Detection", 20f, 520f, perfPaint)
         canvas.drawText("Objects Found: ${currentObjects.size}", 20f, 550f, perfPaint)
+        
+        // PYTHON HEATMAP: Draw the heatmap overlay
+        drawPythonHeatmapOverlay(canvas)
+    }
+    
+    private fun drawPythonHeatmapOverlay(canvas: Canvas) {
+        // Draw heatmap for each face region
+        for (faceRegion in lastFaceRegions) {
+            val faceKey = FaceRect(
+                faceRegion.left.toInt(),
+                faceRegion.top.toInt(),
+                faceRegion.right.toInt(),
+                faceRegion.bottom.toInt()
+            )
+            
+            val heatmap = heatmapData[faceKey]
+            if (heatmap != null && heatmap.isNotEmpty()) {
+                val maxHeat = heatmap.maxOrNull() ?: 0f
+                if (maxHeat > 0.01f) {
+                    // Draw heatmap with red color gradient
+                    drawRedHeatmapOverlay(canvas, faceKey, heatmap)
+                    
+                    // Debug: Show heatmap status
+                    val debugPaint = Paint().apply {
+                        color = Color.WHITE
+                        textSize = 24f
+                        isAntiAlias = true
+                        isFakeBoldText = true
+                        setShadowLayer(2f, 1f, 1f, Color.BLACK)
+                    }
+                    canvas.drawText(
+                        "HEATMAP: ${String.format("%.2f", maxHeat)}", 
+                        20f, 580f, 
+                        debugPaint
+                    )
+                } else {
+                    // Show low heat debug
+                    val debugPaint = Paint().apply {
+                        color = Color.YELLOW
+                        textSize = 20f
+                        isAntiAlias = true
+                        setShadowLayer(1f, 1f, 1f, Color.BLACK)
+                    }
+                    canvas.drawText("HEAT TOO LOW: ${String.format("%.4f", maxHeat)}", 20f, 580f, debugPaint)
+                }
+            } else {
+                // Show no heatmap debug
+                val debugPaint = Paint().apply {
+                    color = Color.RED
+                    textSize = 20f
+                    isAntiAlias = true
+                    setShadowLayer(1f, 1f, 1f, Color.BLACK)
+                }
+                canvas.drawText("NO HEATMAP DATA", 20f, 580f, debugPaint)
+            }
+        }
+    }
+    
+    private fun drawRedHeatmapOverlay(canvas: Canvas, faceKey: FaceRect, heatmap: FloatArray) {
+        // Get the actual camera frame dimensions for mapping
+        val frameWidth = lastFaceRegions.firstOrNull()?.let { 
+            (it.right - it.left) * 5 // Estimate frame width from face size
+        } ?: 640f
+        
+        val frameHeight = lastFaceRegions.firstOrNull()?.let {
+            (it.bottom - it.top) * 5 // Estimate frame height from face size  
+        } ?: 480f
+        
+        // The heatmap is stored as frame_rows * frame_cols
+        // We need to figure out the cols and rows from the camera frame
+        val cols = frameWidth.toInt()
+        val rows = frameHeight.toInt()
+        
+        // Draw heatmap pixels as red overlay
+        val maxHeat = heatmap.maxOrNull() ?: 0f
+        if (maxHeat <= 0f) {
+            Log.d("OverlayView", "No heat to draw, maxHeat = $maxHeat")
+            return
+        }
+        
+        Log.d("OverlayView", "Drawing heatmap: ${cols}x${rows}, maxHeat=$maxHeat")
+        
+        // Use larger pixel size for visibility
+        val pixelSize = 6f
+        var pixelsDrawn = 0
+        
+        for (y in 0 until min(rows, heatmap.size / cols) step 3) { // Step 3 for performance
+            for (x in 0 until cols step 3) {
+                val index = y * cols + x
+                if (index < heatmap.size) {
+                    val intensity = heatmap[index] / maxHeat
+                    
+                    if (intensity > 0.005f) { // Very low threshold for visibility
+                        // Convert frame coordinates to screen coordinates
+                        val screenX = (x.toFloat() / cols.toFloat() * width * uniformScaleFactor) + xOffset
+                        val screenY = (y.toFloat() / rows.toFloat() * height * uniformScaleFactor) + yOffset
+                        
+                        // Create bright red heatmap color (very visible)
+                        val alpha = (intensity * 255 * 0.8f).toInt().coerceIn(100, 200) // More opaque
+                        val red = (255 * intensity).toInt().coerceIn(150, 255) // Brighter red
+                        val green = (50 * (1f - intensity)).toInt().coerceIn(0, 50) // Less green
+                        val blue = 0
+                        
+                        val heatPaint = Paint().apply {
+                            color = Color.argb(alpha, red, green, blue)
+                            style = Paint.Style.FILL
+                        }
+                        
+                        // Draw heat pixel
+                        canvas.drawRect(
+                            screenX, screenY,
+                            screenX + pixelSize, screenY + pixelSize,
+                            heatPaint
+                        )
+                        pixelsDrawn++
+                    }
+                }
+            }
+        }
+        
+        Log.d("OverlayView", "Drew $pixelsDrawn heat pixels")
     }
 
     private fun applyTransformations(bitmap: Bitmap, drawableRect: RectF): Bitmap {
@@ -1026,6 +1147,7 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         if (heatmap == null) {
             heatmap = FloatArray(frameShape.rows() * frameShape.cols()) { 0f }
             heatmapData[faceKey] = heatmap
+            Log.d("OverlayView", "Created heatmap: ${frameShape.cols()}x${frameShape.rows()} = ${heatmap.size} pixels")
         }
         
         // Python: Add minimal padding to detection area (5 pixels around face)
@@ -1079,16 +1201,19 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
                 val heatIntensity = 0.4f * (1.0f - distanceRatio * 0.1f) // Higher intensity for longer heatmap life
                 
                 // Add heat in the object area
+                var heatAdded = 0
                 for (y in obj.top until obj.bottom) {
                     for (x in obj.left until obj.right) {
                         if (y >= 0 && y < frameShape.rows() && x >= 0 && x < frameShape.cols()) {
                             val index = y * frameShape.cols() + x
                             if (index < heatmap.size) {
                                 heatmap[index] = min(maxHeatmapValue, heatmap[index] + heatIntensity)
+                                heatAdded++
                             }
                         }
                     }
                 }
+                Log.d("OverlayView", "Added heat: intensity=$heatIntensity to $heatAdded pixels, obj=${obj.left},${obj.top},${obj.right-obj.left},${obj.bottom-obj.top}")
             }
         }
         
