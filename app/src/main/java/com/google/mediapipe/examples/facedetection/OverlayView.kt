@@ -305,9 +305,106 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
                 }
             }
             
+            // PYTHON STYLE DISPLAY: Draw Python-style detection results
+            drawPythonStyleResults(canvas)
+            
         } finally {
             lock.unlock()
         }
+    }
+    
+    private fun drawPythonStyleResults(canvas: Canvas) {
+        // Draw all detected objects (gray rectangles like Python)
+        for (obj in currentObjects) {
+            val objRect = RectF(
+                (obj.left * uniformScaleFactor) + xOffset,
+                (obj.top * uniformScaleFactor) + yOffset, 
+                (obj.right * uniformScaleFactor) + xOffset,
+                (obj.bottom * uniformScaleFactor) + yOffset
+            )
+            
+            val objPaint = Paint().apply {
+                color = Color.GRAY
+                style = Paint.Style.STROKE
+                strokeWidth = 2f
+            }
+            canvas.drawRect(objRect, objPaint)
+            
+            val objText = Paint().apply {
+                color = Color.GRAY
+                textSize = 20f
+                isAntiAlias = true
+            }
+            canvas.drawText(
+                "Best Contour",
+                objRect.left,
+                objRect.top - 10,
+                objText
+            )
+        }
+        
+        // Draw the consistent face (green with "FACE" label like Python)
+        lastConsistentFace?.let { consistentFace ->
+            val consistentRect = RectF(
+                (consistentFace.left * uniformScaleFactor) + xOffset,
+                (consistentFace.top * uniformScaleFactor) + yOffset,
+                (consistentFace.right * uniformScaleFactor) + xOffset,
+                (consistentFace.bottom * uniformScaleFactor) + yOffset
+            )
+            
+            val consistentPaint = Paint().apply {
+                color = Color.GREEN
+                style = Paint.Style.STROKE
+                strokeWidth = 4f
+            }
+            canvas.drawRect(consistentRect, consistentPaint)
+            
+            val consistentText = Paint().apply {
+                color = Color.GREEN
+                textSize = 28f
+                isAntiAlias = true
+                isFakeBoldText = true
+            }
+            canvas.drawText(
+                "FACE",
+                consistentRect.left,
+                consistentRect.top - 15,
+                consistentText
+            )
+            
+            // Draw face center point
+            val centerX = consistentRect.left + (consistentRect.right - consistentRect.left) / 2
+            val centerY = consistentRect.top + (consistentRect.bottom - consistentRect.top) / 2
+            
+            val centerPaint = Paint().apply {
+                color = Color.RED
+                style = Paint.Style.FILL
+            }
+            canvas.drawCircle(centerX, centerY, 6f, centerPaint)
+        }
+        
+        // Draw detection info (Python style)
+        val infoPaint = Paint().apply {
+            color = Color.RED
+            textSize = 28f
+            isAntiAlias = true
+            isFakeBoldText = true
+            setShadowLayer(2f, 1f, 1f, Color.BLACK)
+        }
+        
+        canvas.drawText("Detected: ${currentObjects.size}", 20f, 400f, infoPaint)
+        canvas.drawText("Consistent: ${if (lastConsistentFace != null) "Yes" else "No"}", 20f, 440f, infoPaint)
+        canvas.drawText("Reset Counter: $consistencyResetCounter", 20f, 480f, infoPaint)
+        
+        // Show Python-style performance info
+        val perfPaint = Paint().apply {
+            color = Color.CYAN
+            textSize = 24f
+            isAntiAlias = true
+            setShadowLayer(1f, 1f, 1f, Color.BLACK)
+        }
+        canvas.drawText("PYTHON METHOD: HSV Skin Detection", 20f, 520f, perfPaint)
+        canvas.drawText("Objects Found: ${currentObjects.size}", 20f, 550f, perfPaint)
     }
 
     private fun applyTransformations(bitmap: Bitmap, drawableRect: RectF): Bitmap {
@@ -545,6 +642,10 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
             val currentMat = Mat()
             Utils.bitmapToMat(currentBitmap, currentMat)
             
+            // PYTHON METHOD: Use HSV skin tone detection within MediaPipe face area
+            // This replicates the Python code's skin detection approach
+            performPythonStyleDetection(currentMat)
+            
             val grayCurrentMat = Mat()
             Imgproc.cvtColor(currentMat, grayCurrentMat, Imgproc.COLOR_RGB2GRAY)
             
@@ -663,11 +764,185 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
             // Update object tracking system (Python version logic)
             updateObjectTracking()
             
+            // PYTHON HEATMAP: Update heatmap with Python-style logic
+            updatePythonStyleHeatmap(currentMat)
+            
         } finally {
             lock.unlock()
         }
     }
     
+    private fun performPythonStyleDetection(currentMat: Mat) {
+        // EXACT PYTHON REPLICATION: HSV skin tone detection within MediaPipe face area
+        for (faceRegion in lastFaceRegions) {
+            val faceX = max(0, faceRegion.left.toInt())
+            val faceY = max(0, faceRegion.top.toInt())
+            val faceW = min(currentMat.cols() - faceX, (faceRegion.right - faceRegion.left).toInt())
+            val faceH = min(currentMat.rows() - faceY, (faceRegion.bottom - faceRegion.top).toInt())
+            
+            // Python: Define dynamic search area: MediaPipe face + 5 pixel padding
+            val searchPadding = 5
+            val searchX = max(0, faceX - searchPadding)
+            val searchY = max(0, faceY - searchPadding)
+            val searchW = min(currentMat.cols() - searchX, faceW + 2 * searchPadding)
+            val searchH = min(currentMat.rows() - searchY, faceH + 2 * searchPadding)
+            
+            if (searchW > 0 && searchH > 0) {
+                // Extract search region (much smaller area for speed)
+                val searchRegion = Mat(currentMat, org.opencv.core.Rect(searchX, searchY, searchW, searchH))
+                
+                // Python: Convert to HSV for skin tone detection
+                val hsvRegion = Mat()
+                Imgproc.cvtColor(searchRegion, hsvRegion, Imgproc.COLOR_RGB2HSV)
+                
+                // Python: Optimized skin tone range for face detection
+                val lowerSkin = Scalar(0.0, 30.0, 60.0)
+                val upperSkin = Scalar(20.0, 255.0, 255.0)
+                
+                // Create a mask for skin tone
+                val mask = Mat()
+                Core.inRange(hsvRegion, lowerSkin, upperSkin, mask)
+                
+                // Python: Fast morphological operations
+                val kernel = Imgproc.getStructuringElement(Imgproc.MORPH_ELLIPSE, Size(3.0, 3.0))
+                val erodedMask = Mat()
+                val dilatedMask = Mat()
+                Imgproc.erode(mask, erodedMask, kernel, Point(-1.0, -1.0), 1)
+                Imgproc.dilate(erodedMask, dilatedMask, kernel, Point(-1.0, -1.0), 1)
+                
+                // Find contours in the mask
+                val contours = mutableListOf<MatOfPoint>()
+                val hierarchy = Mat()
+                Imgproc.findContours(dilatedMask, contours, hierarchy, Imgproc.RETR_EXTERNAL, Imgproc.CHAIN_APPROX_SIMPLE)
+                
+                val faceSize = faceW * faceH
+                
+                for (contour in contours) {
+                    // Get bounding rectangle
+                    val boundingRect = Imgproc.boundingRect(contour)
+                    val contourSize = boundingRect.width * boundingRect.height
+                    
+                    // Python: Filter by reasonable size (similar to MediaPipe face)
+                    val sizeRatio = contourSize.toFloat() / faceSize.toFloat()
+                    if (sizeRatio in 0.3f..3.0f) {  // Allow contours 30% to 300% of face size
+                        // Python: Filter for face-like aspect ratios
+                        val aspectRatio = boundingRect.width.toFloat() / boundingRect.height.toFloat()
+                        if (aspectRatio in 0.5f..2.0f) {
+                            // Convert coordinates back to full frame
+                            val fullX = searchX + boundingRect.x
+                            val fullY = searchY + boundingRect.y
+                            
+                            // Add to current objects
+                            currentObjects.add(FaceRect(
+                                fullX, fullY, 
+                                fullX + boundingRect.width, 
+                                fullY + boundingRect.height
+                            ))
+                        }
+                    }
+                }
+                
+                // Clean up
+                contours.forEach { it.release() }
+                hierarchy.release()
+                searchRegion.release()
+                hsvRegion.release()
+                mask.release()
+                erodedMask.release()
+                dilatedMask.release()
+                kernel.release()
+            }
+        }
+    }
+
+    private fun updatePythonStyleHeatmap(frameShape: Mat) {
+        // PYTHON HEATMAP: Exact replication of Python heatmap logic
+        val facePosition = lastFaceRegions.firstOrNull() // Use first face like Python
+        
+        if (facePosition == null) return
+        
+        val faceX = facePosition.left.toInt()
+        val faceY = facePosition.top.toInt()
+        val faceW = (facePosition.right - facePosition.left).toInt()
+        val faceH = (facePosition.bottom - facePosition.top).toInt()
+        val faceCenterX = faceX + faceW / 2
+        val faceCenterY = faceY + faceH / 2
+        
+        // Initialize heatmap if needed
+        val faceKey = FaceRect(faceX, faceY, faceX + faceW, faceY + faceH)
+        var heatmap = heatmapData[faceKey]
+        if (heatmap == null) {
+            heatmap = FloatArray(frameShape.rows() * frameShape.cols()) { 0f }
+            heatmapData[faceKey] = heatmap
+        }
+        
+        // Python: Add minimal padding to detection area (5 pixels around face)
+        val padding = 5
+        val paddedX = max(0, faceX - padding)
+        val paddedY = max(0, faceY - padding)
+        val paddedW = min(frameShape.cols() - paddedX, faceW + 2 * padding)
+        val paddedH = min(frameShape.rows() - paddedY, faceH + 2 * padding)
+        
+        // PYTHON: FAST HEATMAP CLEANUP - remove heatmap outside face area
+        for (y in 0 until frameShape.rows()) {
+            for (x in 0 until frameShape.cols()) {
+                val index = y * frameShape.cols() + x
+                if (index < heatmap.size) {
+                    // Check if pixel is inside padded face area
+                    val isInsideFace = (x >= paddedX && x < paddedX + paddedW && 
+                                       y >= paddedY && y < paddedY + paddedH)
+                    
+                    if (isInsideFace) {
+                        // Python: Apply normal decay to areas inside face (2% decay)
+                        heatmap[index] *= 0.98f
+                    } else {
+                        // Python: Apply aggressive decay to areas outside face (90% decay per frame)
+                        heatmap[index] *= 0.1f
+                    }
+                }
+            }
+        }
+        
+        // Python: Add heat for current objects inside padded area
+        for (obj in currentObjects) {
+            val objCenterX = obj.left + (obj.right - obj.left) / 2
+            val objCenterY = obj.top + (obj.bottom - obj.top) / 2
+            
+            // Check if object center is inside padded area
+            if (objCenterX >= paddedX && objCenterX < paddedX + paddedW &&
+                objCenterY >= paddedY && objCenterY < paddedY + paddedH) {
+                
+                // Python: Calculate distance from object center to face center
+                val distanceToCenter = kotlin.math.sqrt(
+                    ((objCenterX - faceCenterX) * (objCenterX - faceCenterX) + 
+                     (objCenterY - faceCenterY) * (objCenterY - faceCenterY)).toDouble()
+                ).toFloat()
+                
+                // Python: Simplified heat intensity based on distance
+                val maxDistance = kotlin.math.sqrt(
+                    ((faceW/2 + padding) * (faceW/2 + padding) + 
+                     (faceH/2 + padding) * (faceH/2 + padding)).toDouble()
+                ).toFloat()
+                val distanceRatio = min(distanceToCenter / maxDistance, 1.0f)
+                val heatIntensity = 0.4f * (1.0f - distanceRatio * 0.1f) // Higher intensity for longer heatmap life
+                
+                // Add heat in the object area
+                for (y in obj.top until obj.bottom) {
+                    for (x in obj.left until obj.right) {
+                        if (y >= 0 && y < frameShape.rows() && x >= 0 && x < frameShape.cols()) {
+                            val index = y * frameShape.cols() + x
+                            if (index < heatmap.size) {
+                                heatmap[index] = min(maxHeatmapValue, heatmap[index] + heatIntensity)
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        heatmapAge[faceKey] = System.currentTimeMillis()
+    }
+
     private fun updateObjectTracking() {
         // Check if consistency should be reset
         if (shouldResetConsistency()) {
@@ -676,19 +951,8 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
             Log.d("OverlayView", "Consistency reset - no face detected for too long")
         }
         
-        // Add current objects to history (convert face regions to FaceRect)
-        val frameObjects = mutableListOf<FaceRect>()
-        for (faceRegion in lastFaceRegions) {
-            frameObjects.add(FaceRect(
-                faceRegion.left.toInt(),
-                faceRegion.top.toInt(), 
-                faceRegion.right.toInt(),
-                faceRegion.bottom.toInt()
-            ))
-        }
-        
-        // Add to history (maintain max size)
-        objectHistory.addLast(frameObjects)
+        // Add current objects to history
+        objectHistory.addLast(currentObjects.toList())
         if (objectHistory.size > 150) {
             objectHistory.removeFirst()
         }
@@ -699,12 +963,12 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
         // Update consistent face position if found
         if (consistentFace != null) {
             lastConsistentFace = updateConsistentFacePosition(consistentFace, consistentFace)
-        } else if (lastConsistentFace != null && frameObjects.isNotEmpty()) {
+        } else if (lastConsistentFace != null && currentObjects.isNotEmpty()) {
             // Try to reconnect to nearest object
             var nearestObject: FaceRect? = null
             var nearestDistance = Float.MAX_VALUE
             
-            for (obj in frameObjects) {
+            for (obj in currentObjects) {
                 val distance = calculateDistance(lastConsistentFace!!, obj)
                 if (distance < nearestDistance) {
                     nearestDistance = distance

@@ -287,10 +287,11 @@ class FaceDetectorHelper(
 
         currentBitmap = rotatedBitmap
 
-        // Run contrast detection on EVERY frame to match live video FPS
+        // CRITICAL: Run contrast detection on EVERY frame for full FPS synchronization
+        // This matches Python behavior where grayscale processing happens at camera FPS
         faceDetectorListener?.onFrameForContrastDetection(rotatedBitmap)
         
-        // Only run MediaPipe face detection every 0.3 seconds for face position updates
+        // Only run MediaPipe face detection at adaptive intervals for face position updates
         if (shouldDetectWithMediaPipe) {
             lastDetectionTime = frameTime
             // Convert the input Bitmap face to an MPImage face to run inference
