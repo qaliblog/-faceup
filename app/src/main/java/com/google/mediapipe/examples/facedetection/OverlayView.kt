@@ -1146,14 +1146,14 @@ class OverlayView(context: Context?, attrs: AttributeSet?) : View(context, attrs
             
             // Create some emergency pixel activity in center for testing
             val currentTime = System.currentTimeMillis()
-            val centerX = currentMat.cols() / 2
-            val centerY = currentMat.rows() / 2
+            val pixelCenterX = currentMat.cols() / 2
+            val pixelCenterY = currentMat.rows() / 2
             val radius = minOf(currentMat.cols(), currentMat.rows()) / 6
             
             for (i in 0..20) {
                 val angle = (i * 18.0) * Math.PI / 180.0 // Every 18 degrees
-                val x = (centerX + Math.cos(angle) * radius).toInt()
-                val y = (centerY + Math.sin(angle) * radius).toInt()
+                val x = (pixelCenterX + Math.cos(angle) * radius).toInt()
+                val y = (pixelCenterY + Math.sin(angle) * radius).toInt()
                 
                 if (x >= 0 && x < contrastFrameWidth && y >= 0 && y < contrastFrameHeight) {
                     val pixelIndex = y * contrastFrameWidth + x
